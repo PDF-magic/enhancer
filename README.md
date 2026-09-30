@@ -34,6 +34,26 @@ apply PDF structure tags, recompress compatible image streams without changing
 decoded pixels, and optionally incorporate a local Ollama review. See the
 [OCR workflow](OCR.md) for requirements and commands.
 
+## SEC concept-release comment references
+
+`download-sec-comments.py` downloads the PDF and raw HTML submissions listed
+for an SEC file number. Public-comment PDFs, raw HTML comments, and meeting
+memoranda are stored in separate directories.
+
+Set an identifying SEC User-Agent locally and provide the file number:
+
+```sh
+export SEC_USER_AGENT='Your Name your@email.com'
+python3 download-sec-comments.py S7-27-15
+```
+
+If `SEC_USER_AGENT` is unset, the tool prompts for it in an interactive shell.
+Use `--dry-run` to inspect the files and classifications without downloading.
+
+DO NOT USE FOR PRORESED RULE, CP ONLY
+
+This tool is intended only to refresh local reference copies.
+
 ## Provenance
 
 This toolset was migrated from the following immutable source snapshot after
