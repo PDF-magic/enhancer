@@ -4,23 +4,44 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./ocr-scanned-pdf.sh INPUT.pdf [OUTPUT.pdf]
+Usage: ./ocr-scanned-pdf.sh INPUT.pdf [OUTPUT.pdf] [--skip-text|--force-ocr] [--ai-review]
 
 Create a searchable, tagged PDF from an English-language scanned PDF. If
 OUTPUT.pdf is omitted, the output is written beside the input as
 INPUT-enhanced-ocr.pdf. A plain-text sidecar and JSON tagging report are
 written beside the output for searching and review. OCR lines are grouped into
 logical paragraphs, and likely section headings are tagged as H1 or H2.
+Use --skip-text for mixed documents to preserve pages that already have text.
+Use --force-ocr to replace the text layer on every page, including existing OCR.
+Use --ai-review to apply the local DeepSeek and SEC OCR review models afterward.
 
 Install the required tools on macOS with:
   brew install ocrmypdf
 EOF
 }
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
+if [[ $# -lt 1 || $# -gt 4 ]]; then
     usage >&2
     exit 2
 fi
+
+ocr_options=()
+ocr_mode=""
+ai_review=false
+for option in "${@:3}"; do
+    case "$option" in
+        --skip-text|--force-ocr)
+            if [[ -n "$ocr_mode" ]]; then
+                printf 'Select only one OCR mode.\n' >&2
+                exit 2
+            fi
+            ocr_mode=$option
+            ocr_options+=("$option")
+            ;;
+        --ai-review) ai_review=true ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
 
 input=$1
 
@@ -36,6 +57,7 @@ output=${2:-"$input_dir/$input_stem-enhanced-ocr.pdf"}
 output_stem=${output%.*}
 sidecar="$output_stem.txt"
 tagging_report="$output_stem.tagging.json"
+review_report="$output_stem.review.jsonl"
 
 if [[ "$input" == "$output" ]]; then
     printf 'Input and output must be different files.\n' >&2
@@ -48,6 +70,10 @@ for path in "$output" "$sidecar" "$tagging_report"; do
         exit 1
     fi
 done
+if "$ai_review" && [[ -e "$review_report" ]]; then
+    printf 'Refusing to overwrite existing file: %s\n' "$review_report" >&2
+    exit 1
+fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 tagger="$script_dir/tag-ocr-pdf.py"
@@ -77,13 +103,14 @@ for command_name in ocrmypdf qpdf; do
     fi
 done
 
-input_pages=$(qpdf --show-npages "$input")
+input_pages=$(qpdf --warning-exit-0 --show-npages "$input")
 
 # Adaptive Otsu thresholding recovered more faint and broken text in this
 # archive's old Google Books scans than the default thresholding pass. OCR is
-# rendered at 300 DPI, while the source page images remain unchanged in the
-# output. Optimization is disabled to avoid lossy image recompression.
+# rendered at 300 DPI. --force-ocr rasterizes pages to replace all existing
+# text; other modes preserve source images. Optimization remains disabled.
 ocrmypdf \
+    ${ocr_options[@]+"${ocr_options[@]}"} \
     --language eng \
     --output-type pdf \
     --optimize 0 \
@@ -98,20 +125,46 @@ ocrmypdf \
 tagging_dir=$(mktemp -d "${TMPDIR:-/tmp}/ocr-pdf-tagging.XXXXXX")
 trap 'rm -rf -- "$tagging_dir"' EXIT
 tagged_output="$tagging_dir/tagged.pdf"
+initial_report="$tagging_report"
+if "$ai_review"; then
+    initial_report="$tagging_dir/initial.tagging.json"
+fi
 
 "$tagger_python" "$tagger" \
     "$output" \
     "$tagged_output" \
-    --report "$tagging_report" \
+    --report "$initial_report" \
     --reported-input "$input" \
     --reported-output "$output"
+
+if "$ai_review"; then
+    "$tagger_python" "$script_dir/ollama-review-ocr.py" \
+        "$tagged_output" "$initial_report" "$review_report"
+    reviewed_output="$tagging_dir/reviewed.pdf"
+    "$tagger_python" "$tagger" \
+        "$output" "$reviewed_output" \
+        --review "$review_report" \
+        --report "$tagging_report" \
+        --reported-input "$input" \
+        --reported-output "$output"
+    tagged_output="$reviewed_output"
+    "$tagger_python" - "$tagging_report" "$sidecar" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+report = json.loads(Path(sys.argv[1]).read_text())
+blocks = [block["text"] for block in report["blocks"] if block["type"] != "artifact"]
+Path(sys.argv[2]).write_text("\n\n".join(blocks) + "\n")
+PY
+fi
 
 # The untagged file was created by this invocation and is replaced only after
 # the complete tagged sibling has been written and structurally checked.
 mv -f -- "$tagged_output" "$output"
 
-qpdf --check "$output"
-output_pages=$(qpdf --show-npages "$output")
+qpdf --warning-exit-0 --check "$output"
+output_pages=$(qpdf --warning-exit-0 --show-npages "$output")
 
 if [[ "$input_pages" != "$output_pages" ]]; then
     printf 'Page-count mismatch: input=%s output=%s\n' \

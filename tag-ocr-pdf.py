@@ -594,6 +594,35 @@ def find_ocr_form(page: pikepdf.Page) -> pikepdf.Object | None:
     return forms[0] if forms else None
 
 
+def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -> int:
+    """Expose recognized heading tags as navigable PDF sections."""
+    roots = []
+    ancestors = []
+    count = 0
+    for heading in headings:
+        level_name = str(heading.get("level", ""))
+        title = str(heading.get("text", "")).strip()
+        page = heading.get("page")
+        if level_name not in {"H1", "H2", "H3", "H4", "H5", "H6"} or not title:
+            continue
+        if type(page) is not int or not 1 <= page <= len(pdf.pages):
+            continue
+        level = int(level_name[1])
+        item = pikepdf.OutlineItem(title, destination=page - 1)
+        while ancestors and ancestors[-1][0] >= level:
+            ancestors.pop()
+        if ancestors:
+            ancestors[-1][1].children.append(item)
+        else:
+            roots.append(item)
+        ancestors.append((level, item))
+        count += 1
+    if roots:
+        with pdf.open_outline() as outline:
+            outline.root = roots
+    return count
+
+
 def tag_pdf(
     input_path: Path,
     output_path: Path,
@@ -634,6 +663,13 @@ def tag_pdf(
 
     with pikepdf.open(input_path) as pdf:
         report["pages"] = len(pdf.pages)
+        if not any(find_ocr_form(page) is not None for page in pdf.pages):
+            # --skip-text can leave no new OCR forms. Preserve the source's
+            # existing content and structure instead of creating empty tags.
+            report["preserved_existing_text"] = True
+            pdf.save(output_path)
+            report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+            return report
         deep_heading_pages = {level: set() for level in ("H3", "H4", "H5", "H6")}
         for page_number, page in enumerate(pdf.pages, start=1):
             form = find_ocr_form(page)
@@ -741,16 +777,19 @@ def tag_pdf(
         pdf.Root["/StructTreeRoot"] = structure_root
         pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
         pdf.Root["/Lang"] = String("en-US")
+        report["outline_entries"] = write_heading_outline(pdf, report["headings"])
         pdf.save(output_path)
 
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     return report
 
 
-def validate_output(path: Path, expected_pages: int) -> None:
+def validate_output(path: Path, expected_pages: int, require_tags: bool = True) -> None:
     with pikepdf.open(path) as pdf:
         if len(pdf.pages) != expected_pages:
             raise ValueError("tagged PDF page count changed")
+        if not require_tags:
+            return
         if pdf.Root.get("/StructTreeRoot") is None:
             raise ValueError("tagged PDF has no /StructTreeRoot")
         mark_info = pdf.Root.get("/MarkInfo", Dictionary())
@@ -779,7 +818,7 @@ def main() -> int:
             args.reported_input,
             args.reported_output,
         )
-        validate_output(args.output, expected_pages)
+        validate_output(args.output, expected_pages, require_tags=report["tagged_pages"] > 0)
     except Exception as error:
         print(f"Tagging failed: {error}", file=sys.stderr)
         return 1

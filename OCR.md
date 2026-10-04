@@ -12,6 +12,18 @@ tagging without replacing the source:
 ./ocr-scanned-pdf.sh SOURCE.pdf NEW-OCR.pdf
 ```
 
+To rebuild every page's text, including pages with existing OCR or digital text,
+and apply the local AI review in one run:
+
+```sh
+./ocr-scanned-pdf.sh SOURCE.pdf NEW-AI-OCR.pdf --force-ocr --ai-review
+```
+
+This is the workflow used by the viewer's Enhance button. Force OCR rasterizes
+pages and replaces existing text in the new copy; the source remains unchanged.
+The AI pass reviews all pages with recognized blocks, applies reviewed text and
+tags, and writes a `.review.jsonl` alongside the PDF, text, and tagging report.
+
 The command refuses to overwrite files. It writes a searchable PDF, a text
 sidecar, and a JSON report containing every classified block. Body paragraphs
 use `P`; document parts/chapters/appendices use `H1`; primary sections use `H2`;
@@ -19,6 +31,9 @@ lettered, numbered, lowercase, and parenthesized Roman levels may use `H3` throu
 `H6`; and table-like regions use `Div` so table labels are not promoted to
 headings. A deeper prefix style is enabled only when it recurs on at least two
 pages, preventing one-off list items from inventing a document hierarchy.
+Recognized headings also become nested PDF bookmarks with page destinations,
+so the viewer can show its section navigator for the enhanced copy. The final
+bookmarks use the AI-reviewed heading text and levels when AI review is enabled.
 
 ## Create a much smaller derivative
 
