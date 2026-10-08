@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Add heuristic paragraph and heading structure to an OCRmyPDF PDF.
 
-This targets OCRmyPDF's fpdf2 renderer, which places invisible OCR text in one
-Form XObject per page and normally emits one BT/ET text object per visual line.
-The script groups those lines into paragraphs, labels likely section headings,
-and builds the PDF structure and parent trees needed for real tagged content.
+Supports OCRmyPDF's fpdf2 text forms and untagged embedded page text using
+ToUnicode or WinAnsi fonts. The script groups text objects into paragraphs,
+labels likely section headings, and builds the PDF structure and parent trees
+without rasterizing existing page content.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from typing import Iterable
 
 import pikepdf
 from pikepdf import Array, Dictionary, Name, Operator, String
+
+from pdf_metadata import apply_metadata, choose_source_url, local_user_name, source_details, visible_creator
 
 
 MAJOR_HEADING = re.compile(
@@ -61,6 +63,7 @@ class OcrLine:
     artifact: bool = False
     table: bool = False
     heading: str | None = None
+    bold: bool = False
 
 
 @dataclass
@@ -89,6 +92,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="optional Ollama JSON/JSONL decisions produced by ollama-review-ocr.py",
     )
+    parser.add_argument("--source-url", default="", help="original document URL to retain as pdfmagic:href")
     parser.add_argument("--reported-input", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--reported-output", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -116,17 +120,36 @@ def unicode_map(font: pikepdf.Object) -> dict[bytes, str]:
     stream = font.get("/ToUnicode")
     if stream is None:
         raise ValueError("OCR font has no /ToUnicode map")
-    pairs = re.findall(
-        rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", stream.read_bytes()
-    )
+    cmap = stream.read_bytes()
     result: dict[bytes, str] = {}
-    for source, target in pairs:
+
+    def add(source: bytes, target: bytes) -> None:
         try:
-            result[bytes.fromhex(source.decode())] = bytes.fromhex(
-                target.decode()
-            ).decode("utf-16-be")
-        except (UnicodeDecodeError, ValueError):
-            continue
+            result[source] = target.decode("utf-16-be")
+        except UnicodeDecodeError:
+            pass
+
+    for section in re.findall(rb"beginbfchar(.*?)endbfchar", cmap, re.S):
+        for source, target in re.findall(rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", section):
+            add(bytes.fromhex(source.decode()), bytes.fromhex(target.decode()))
+    for section in re.findall(rb"beginbfrange(.*?)endbfrange", cmap, re.S):
+        for first, last, target, values in re.findall(
+            rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(?:<([0-9A-Fa-f]+)>|\[(.*?)\])",
+            section, re.S,
+        ):
+            start, end = int(first, 16), int(last, 16)
+            width = len(first) // 2
+            if not 0 <= end - start < 65536:
+                raise ValueError("unsupported Unicode range")
+            if target:
+                base = bytes.fromhex(target.decode())
+                for offset, code in enumerate(range(start, end + 1)):
+                    value = int.from_bytes(base, "big") + offset
+                    add(code.to_bytes(width, "big"), value.to_bytes(len(base), "big"))
+            else:
+                targets = re.findall(rb"<([0-9A-Fa-f]+)>", values)
+                for code, value in zip(range(start, end + 1), targets):
+                    add(code.to_bytes(width, "big"), bytes.fromhex(value.decode()))
     return result
 
 
@@ -190,7 +213,13 @@ def extract_lines(
 ) -> list[OcrLine]:
     resources = form.get("/Resources", Dictionary())
     fonts = resources.get("/Font", Dictionary())
-    mappings = {str(name): unicode_map(font) for name, font in fonts.items()}
+    mappings = {}
+    for name, font in fonts.items():
+        if font.get("/ToUnicode") is not None:
+            mappings[str(name)] = unicode_map(font)
+        elif font.get("/Subtype") == Name("/Type1") and font.get("/Encoding") == Name("/WinAnsiEncoding"):
+            mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace") for code in range(256)}
+    bold_fonts = {str(name) for name, font in fonts.items() if "bold" in str(font.get("/BaseFont", "")).lower()}
     if not mappings:
         raise ValueError("OCR Form XObject has no fonts")
 
@@ -247,6 +276,7 @@ def extract_lines(
                         x=float(current["x"]),
                         y=float(current["y"]),
                         size=float(current["size"]),
+                        bold=current_font in bold_fonts,
                     )
                 )
             current = None
@@ -594,6 +624,70 @@ def find_ocr_form(page: pikepdf.Page) -> pikepdf.Object | None:
     return forms[0] if forms else None
 
 
+def text_target(pdf: pikepdf.Pdf, page: pikepdf.Page) -> pikepdf.Object | None:
+    """Use an OCR form, or the page's original text without rasterizing it."""
+    form = find_ocr_form(page)
+    if form is not None:
+        return form
+    if pdf.Root.get("/StructTreeRoot") is not None:
+        return None  # Keep an existing document structure intact.
+    fonts = page.obj.get("/Resources", Dictionary()).get("/Font", Dictionary())
+    if fonts and any(font.get("/ToUnicode") is not None or (
+        font.get("/Subtype") == Name("/Type1") and font.get("/Encoding") == Name("/WinAnsiEncoding")
+    ) for font in fonts.values()):
+        return page.obj
+    return None
+
+
+def merge_heading_markers(lines: list[OcrLine]) -> list[OcrLine]:
+    merged = []
+    for line in lines:
+        if merged:
+            previous = merged[-1]
+            if (previous.bold and line.bold and abs(previous.y - line.y) < 1
+                and abs(previous.size - line.size) < .1
+                and line.x > previous.x):
+                separator = "" if line.text[:1].islower() and not previous.text.endswith((" ", "\u00a0")) else " "
+                previous.text += separator + line.text
+                previous.end = line.end
+                continue
+        merged.append(line)
+    return merged
+
+
+def classify_existing_lines(lines: list[OcrLine], heading_sizes: list[float], repeated: set[str], page_width: float, enabled: set[str]) -> None:
+    """Use recurring printed styles, excluding running headers and bold prose."""
+    for line in lines:
+        text = re.sub(r"\s+", " ", line.text).strip()
+        line.heading = None
+        line.table = False
+        # Native text fragments include pronouns and footnote references;
+        # OCR noise/page-number rules must not hide these from extraction.
+        line.artifact = False
+        if text in repeated or re.fullmatch(r"Page \d+ of \d+", text, re.I):
+            line.artifact = True
+            continue
+        if line.artifact:
+            continue
+        if line.x > page_width * .55 or text.startswith(("—", "...", "[")) or re.match(r"^\d{1,2} [A-Z][a-z]{2} \d{4}$", text):
+            continue
+        words = [word for word in text.split() if word[0].isalpha()]
+        title_case = sum(word[0].isupper() for word in words) / max(1, len(words)) >= .6
+        size = round(line.size, 2)
+        if (line.bold and size in heading_sizes and 4 <= len(text) <= 180
+            and 1 <= len(words) <= 14 and title_case and not WORD_END.search(text)):
+            line.heading = "H" + str(min(6, heading_sizes.index(size) + 1))
+            for level, pattern in DEEP_HEADING_PATTERNS:
+                if level in enabled and pattern.match(text):
+                    # Printed size determines the top levels. Recurring
+                    # lowercase markers can distinguish smaller nested levels.
+                    if level == "H5":
+                        line.heading = "H" + str(max(int(line.heading[1]), 4))
+                    elif level == "H6":
+                        line.heading = "H" + str(max(int(line.heading[1]), 5))
+                    break
+
+
 def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -> int:
     """Expose recognized heading tags as navigable PDF sections."""
     roots = []
@@ -630,6 +724,7 @@ def tag_pdf(
     decisions: dict[str, dict[str, object]] | None = None,
     reported_input: Path | None = None,
     reported_output: Path | None = None,
+    source_url: str = "",
 ) -> dict[str, object]:
     if input_path.resolve() == output_path.resolve():
         raise ValueError("input and output must be different files")
@@ -661,25 +756,60 @@ def tag_pdf(
         "deep_heading_profile": {},
     }
 
+    original_path = reported_input if reported_input and reported_input.is_file() else input_path
+    original = source_details(original_path)
+    reference_url = choose_source_url(original["href"], source_url)
     with pikepdf.open(input_path) as pdf:
         report["pages"] = len(pdf.pages)
-        if not any(find_ocr_form(page) is not None for page in pdf.pages):
-            # --skip-text can leave no new OCR forms. Preserve the source's
-            # existing content and structure instead of creating empty tags.
+        targets = [text_target(pdf, page) for page in pdf.pages]
+        extracted = []
+        for target in targets:
+            if target is None:
+                extracted.append(([], []))
+                continue
+            instructions = list(pikepdf.parse_content_stream(target))
+            extracted.append((instructions, extract_lines(target, instructions)))
+        name_lines = []
+        for page_number, (page, (_, lines)) in enumerate(zip(pdf.pages, extracted), start=1):
+            if page_number <= 2 or page_number >= max(1, len(pdf.pages) - 4):
+                for line in lines:
+                    name_lines.append({"page": page_number, "text": line.text,
+                                       "x": line.x, "y": line.y, "size": line.size,
+                                       "height": float(page.mediabox[3]) - float(page.mediabox[1])})
+        creator, creator_source = visible_creator(name_lines, len(pdf.pages))
+        if not creator:
+            creator = original["author"] or local_user_name()
+            creator_source = "document metadata" if original["author"] else "local user"
+        report["creator"] = creator
+        report["creator_source"] = creator_source
+        report["href"] = reference_url or None
+        if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
+            apply_metadata(pdf, creator, reference_url)
             pdf.save(output_path)
             report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
             return report
         deep_heading_pages = {level: set() for level in ("H3", "H4", "H5", "H6")}
-        for page_number, page in enumerate(pdf.pages, start=1):
-            form = find_ocr_form(page)
-            if form is None:
-                continue
-            instructions = list(pikepdf.parse_content_stream(form))
-            for line in extract_lines(form, instructions):
+        margins = Counter()
+        styles = {}
+        existing_prefixes = {level: set() for level, _ in DEEP_HEADING_PATTERNS}
+        for page_number, (page, target, (_, lines)) in enumerate(zip(pdf.pages, targets, extracted), start=1):
+            page_height = float(page.mediabox[3]) - float(page.mediabox[1])
+            margins.update({re.sub(r"\s+", " ", line.text).strip() for line in lines if line.y > page_height * .90 or line.y < page_height * .08})
+            for line in lines:
+                if target is not None and target.get("/Type") == Name("/Page"):
+                    if line.bold:
+                        styles.setdefault(round(line.size, 2), set()).add(page_number)
+                        for level, pattern in DEEP_HEADING_PATTERNS:
+                            # Markers may be separate text objects.
+                            if pattern.match(line.text + " Heading"):
+                                existing_prefixes[level].add(page_number)
                 level = deep_heading_level(line.text)
                 if level:
                     deep_heading_pages[level].add(page_number)
+        heading_sizes = sorted((size for size, pages in styles.items() if len(pages) >= 2 or len(pdf.pages) == 1), reverse=True)
+        existing_deep = {level for level, pages in existing_prefixes.items() if len(pages) >= 2}
+        repeated = {text for text, count in margins.items() if count >= max(3, len(pdf.pages) * .3)}
         enabled_deep_headings = {
             level for level, pages in deep_heading_pages.items() if len(pages) >= 2
         }
@@ -699,16 +829,19 @@ def tag_pdf(
         parent_numbers = Array()
         parent_key = 0
 
-        for page_number, page in enumerate(pdf.pages, start=1):
-            mark_page_images_as_artifacts(pdf, page)
-            form = find_ocr_form(page)
-            if form is None:
+        for page_number, (page, form, (instructions, lines)) in enumerate(zip(pdf.pages, targets, extracted), start=1):
+            if form is None or not lines:
                 continue
-            instructions = list(pikepdf.parse_content_stream(form))
-            lines = extract_lines(form, instructions)
-            bbox = form.get("/BBox", Array([0, 0, 1, 1]))
+            is_page = form.get("/Type") == Name("/Page")
+            if not is_page:
+                mark_page_images_as_artifacts(pdf, page)
+            bbox = page.mediabox if is_page else form.get("/BBox", Array([0, 0, 1, 1]))
             page_width = float(bbox[2]) - float(bbox[0])
+            if is_page:
+                lines = merge_heading_markers(lines)
             classify_lines(lines, page_width, enabled_deep_headings)
+            if is_page:
+                classify_existing_lines(lines, heading_sizes, repeated, page_width, existing_deep)
             blocks = build_blocks(lines)
 
             for block_number, block in enumerate(blocks, start=1):
@@ -733,7 +866,12 @@ def tag_pdf(
                         },
                     }
                 )
-            rewrite_form(form, instructions, blocks)
+            if is_page:
+                stream = pdf.make_stream(pikepdf.unparse_content_stream(instructions))
+                rewrite_form(stream, instructions, blocks)
+                page.obj["/Contents"] = stream
+            else:
+                rewrite_form(form, instructions, blocks)
 
             form["/StructParents"] = parent_key
             parents = Array()
@@ -743,8 +881,10 @@ def tag_pdf(
                     report["artifact_blocks"] = int(report["artifact_blocks"]) + 1
                     continue
                 content_reference = Dictionary(
-                    Type=Name("/MCR"), Pg=page.obj, Stm=form, MCID=mcid
+                    Type=Name("/MCR"), Pg=page.obj, MCID=mcid
                 )
+                if not is_page:
+                    content_reference["/Stm"] = form
                 element = pdf.make_indirect(
                     Dictionary(
                         Type=Name("/StructElem"),
@@ -778,6 +918,7 @@ def tag_pdf(
         pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
         pdf.Root["/Lang"] = String("en-US")
         report["outline_entries"] = write_heading_outline(pdf, report["headings"])
+        apply_metadata(pdf, creator, reference_url)
         pdf.save(output_path)
 
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
@@ -817,6 +958,7 @@ def main() -> int:
             decisions,
             args.reported_input,
             args.reported_output,
+            args.source_url,
         )
         validate_output(args.output, expected_pages, require_tags=report["tagged_pages"] > 0)
     except Exception as error:

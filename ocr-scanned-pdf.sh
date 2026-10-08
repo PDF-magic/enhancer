@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./ocr-scanned-pdf.sh INPUT.pdf [OUTPUT.pdf] [--skip-text|--force-ocr] [--ai-review]
+Usage: ./ocr-scanned-pdf.sh INPUT.pdf [OUTPUT.pdf] [--skip-text|--force-ocr] [--ai-review] [--source-url URL]
 
 Create a searchable, tagged PDF from an English-language scanned PDF. If
 OUTPUT.pdf is omitted, the output is written beside the input as
@@ -14,36 +14,52 @@ logical paragraphs, and likely section headings are tagged as H1 or H2.
 Use --skip-text for mixed documents to preserve pages that already have text.
 Use --force-ocr to replace the text layer on every page, including existing OCR.
 Use --ai-review to apply the local DeepSeek and SEC OCR review models afterward.
+Use --source-url URL to preserve the original document link in PDF metadata.
 
 Install the required tools on macOS with:
   brew install ocrmypdf
 EOF
 }
 
-if [[ $# -lt 1 || $# -gt 4 ]]; then
+if [[ $# -lt 1 ]]; then
     usage >&2
     exit 2
 fi
 
+input=$1
+shift
+requested_output=""
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    requested_output=$1
+    shift
+fi
 ocr_options=()
+metadata_options=()
 ocr_mode=""
 ai_review=false
-for option in "${@:3}"; do
-    case "$option" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --skip-text|--force-ocr)
             if [[ -n "$ocr_mode" ]]; then
                 printf 'Select only one OCR mode.\n' >&2
                 exit 2
             fi
-            ocr_mode=$option
-            ocr_options+=("$option")
+            ocr_mode=$1
+            ocr_options+=("$1")
             ;;
         --ai-review) ai_review=true ;;
+        --source-url)
+            if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+                printf 'Provide a URL after --source-url.\n' >&2
+                exit 2
+            fi
+            metadata_options=(--source-url "$2")
+            shift
+            ;;
         *) usage >&2; exit 2 ;;
     esac
+    shift
 done
-
-input=$1
 
 if [[ ! -f "$input" ]]; then
     printf 'Input PDF not found: %s\n' "$input" >&2
@@ -53,7 +69,7 @@ fi
 input_dir=$(dirname -- "$input")
 input_name=$(basename -- "$input")
 input_stem=${input_name%.*}
-output=${2:-"$input_dir/$input_stem-enhanced-ocr.pdf"}
+output=${requested_output:-"$input_dir/$input_stem-enhanced-ocr.pdf"}
 output_stem=${output%.*}
 sidecar="$output_stem.txt"
 tagging_report="$output_stem.tagging.json"
@@ -104,6 +120,7 @@ for command_name in ocrmypdf qpdf; do
 done
 
 input_pages=$(qpdf --warning-exit-0 --show-npages "$input")
+printf 'PDF_MAGIC_PROGRESS ocr %s\n' "$input_pages"
 
 # Adaptive Otsu thresholding recovered more faint and broken text in this
 # archive's old Google Books scans than the default thresholding pass. OCR is
@@ -135,29 +152,35 @@ fi
     "$tagged_output" \
     --report "$initial_report" \
     --reported-input "$input" \
-    --reported-output "$output"
+    --reported-output "$output" ${metadata_options[@]+"${metadata_options[@]}"}
 
 if "$ai_review"; then
+    printf 'PDF_MAGIC_PROGRESS review %s\n' "$input_pages"
     "$tagger_python" "$script_dir/ollama-review-ocr.py" \
         "$tagged_output" "$initial_report" "$review_report"
     reviewed_output="$tagging_dir/reviewed.pdf"
+    printf 'PDF_MAGIC_PROGRESS finalizing\n'
     "$tagger_python" "$tagger" \
         "$output" "$reviewed_output" \
         --review "$review_report" \
         --report "$tagging_report" \
         --reported-input "$input" \
-        --reported-output "$output"
+        --reported-output "$output" ${metadata_options[@]+"${metadata_options[@]}"}
     tagged_output="$reviewed_output"
-    "$tagger_python" - "$tagging_report" "$sidecar" <<'PY'
+fi
+
+# OCRmyPDF's sidecar omits skipped pages. Build it from the tagging report so
+# preserved embedded text remains searchable in the exported plain text too.
+"$tagger_python" - "$tagging_report" "$sidecar" <<'PYTEXT'
 import json
 from pathlib import Path
 import sys
 
 report = json.loads(Path(sys.argv[1]).read_text())
 blocks = [block["text"] for block in report["blocks"] if block["type"] != "artifact"]
-Path(sys.argv[2]).write_text("\n\n".join(blocks) + "\n")
-PY
-fi
+if blocks:
+    Path(sys.argv[2]).write_text("\n\n".join(blocks) + "\n")
+PYTEXT
 
 # The untagged file was created by this invocation and is replaced only after
 # the complete tagged sibling has been written and structurally checked.

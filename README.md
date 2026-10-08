@@ -34,6 +34,15 @@ apply PDF structure tags, recompress compatible image streams without changing
 decoded pixels, and optionally incorporate a local Ollama review. See the
 [OCR workflow](OCR.md) for requirements and commands.
 
+Enhanced PDFs record Creator and Author from recognizable signatures or large
+letterhead names, then existing author metadata, then the local user's full name
+or username. Producer is `PDF Magic Enhancer`. Both document-info and XMP fields
+are updated. Name detection uses the searchable text and is heuristic.
+
+Pass `--source-url URL` to `ocr-scanned-pdf.sh` to store the original document
+URL in the XMP `pdfmagic:href` property. Existing original URLs are retained
+when processing an enhanced local copy again.
+
 ## SEC concept-release comment references
 
 `download-sec-comments.py` downloads the PDF and raw HTML submissions listed
@@ -53,10 +62,3 @@ Use `--dry-run` to inspect the files and classifications without downloading.
 DO NOT USE FOR PRORESED RULE, CP ONLY
 
 This tool is intended only to refresh local reference copies.
-
-## Provenance
-
-This toolset was migrated from the following immutable source snapshot after
-its development branch was squash-merged:
-
-https://github.com/blocktransfer/SEC-publications/tree/45ef3a6bb1fc0f3269c8fb80579be4d7f67bacc2/tools
