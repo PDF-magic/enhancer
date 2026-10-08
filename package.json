@@ -1,0 +1,9 @@
+{
+  "name": "pdf-magic-exporter-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/frontend-command-builders.test.js",
+    "serve": "python3 -m http.server 4173 --directory web"
+  }
+}

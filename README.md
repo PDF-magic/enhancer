@@ -3,6 +3,19 @@
 Tools for rendering accessible books as PDFs and creating searchable,
 structured derivatives of scanned PDFs.
 
+## Web toolbench
+
+The dependency-free [web interface](web/index.html) keeps Google Books export,
+OCR, local AI review, and compression in separate reusable modules. Each panel
+validates its own inputs and builds the corresponding local CLI command.
+
+```sh
+npm run serve
+```
+
+Open `http://localhost:4173` in a browser. Run the frontend command-builder
+tests with `npm test`.
+
 ## Google Play Books export
 
 `export-google-book.py` captures the visible pages available through a Google
