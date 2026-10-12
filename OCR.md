@@ -90,3 +90,9 @@ The AI prompt treats names, initials, corporate names, dates, references,
 quantities, currency, percentages, and table values as protected evidence. A
 changed protected token is rejected unless the review supplies image-specific
 evidence at confidence 0.98 or higher. The scan remains authoritative.
+
+Transcription preserves visibly printed typos and grammatical errors verbatim,
+without spellchecking or adding `[sic]`. The AI may repair recognition errors
+when the image shows different characters, but an obvious intended spelling is
+not a reason to change the source. This distinction is enforced by the prompts;
+model confidence alone does not guarantee faithful transcription.

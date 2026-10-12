@@ -118,7 +118,10 @@ def extract_visual_text(
     prompt = (
         "Transcribe this historical scanned page exactly. Preserve names, initials, "
         "punctuation, numbers, currency, percentages, table rows, and reading order. "
-        "Do not modernize spelling and do not infer obscured characters. Mark an "
+        "Preserve visibly printed misspellings, typographical errors, and grammatical "
+        "errors verbatim, even when the intended word is obvious. Do not spellcheck, "
+        "silently correct source typos, or add [sic]. Do not modernize spelling and "
+        "do not infer obscured characters. Mark an "
         "unreadable character with [?]. Return plain text only."
     )
     result = ollama_chat(args.endpoint, args.extract_model, prompt, image, "")
@@ -199,8 +202,13 @@ Rules:
   line-end hyphen only when the image clearly shows a split word.
 - A table title or all-caps cell is not automatically a section heading. Classify table
   captions, headers, rows, numeric columns, and dot leaders as table.
-- Preserve historical spelling. Correct an obvious OCR error only when visible evidence
-  supports the exact replacement.
+- Preserve historical spelling and visibly printed misspellings, typographical errors,
+  and grammatical errors verbatim, even when the intended word is obvious. Do not
+  spellcheck, silently correct source typos, or add [sic]. A confidently visible typo
+  in the image is source evidence to preserve, not an OCR error to repair.
+- Correct an OCR error only when the image visibly contains different characters from
+  the OCR. Context, dictionary spelling, and model confidence alone are not evidence
+  for replacing a printed word. If the image agrees with the OCR, retain it.
 - Names, corporate names, personal initials, dates, section numbers, page references,
   quantities, dollar amounts, percentages, and table values are protected evidence.
   Never normalize or guess them. If any protected token changes, confidence must be at
