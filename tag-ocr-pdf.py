@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable
 
 import pikepdf
+from ocr_spelling import preserve_source_spellings
 from pikepdf import Array, Dictionary, Name, Operator, String
 
 from pdf_metadata import apply_metadata, choose_source_url, local_user_name, source_details, visible_creator
@@ -452,6 +453,7 @@ def apply_review(
         and reviewed_text.strip()
         and reviewed_text != block.text
     ):
+        reviewed_text, preserved = preserve_source_spellings(block.text, reviewed_text)
         missing_sensitive = [
             token for token in protected_tokens(block.text) if token not in reviewed_text
         ]
@@ -462,6 +464,10 @@ def apply_review(
                 "sensitive text change rejected without 0.98 confidence and visual evidence",
             )
         block.text = re.sub(r"\s+", " ", reviewed_text).strip()
+        if preserved:
+            return True, "source spellings preserved: " + ", ".join(
+                f"{item['source']} (proposed {item['proposed']})" for item in preserved
+            )
     return True, None
 
 

@@ -94,5 +94,11 @@ evidence at confidence 0.98 or higher. The scan remains authoritative.
 Transcription preserves visibly printed typos and grammatical errors verbatim,
 without spellchecking or adding `[sic]`. The AI may repair recognition errors
 when the image shows different characters, but an obvious intended spelling is
-not a reason to change the source. This distinction is enforced by the prompts;
-model confidence alone does not guarantee faithful transcription.
+not a reason to change the source. A deterministic guard restores small spelling
+substitutions (up to two character edits, or one for three-letter words) from
+the initial OCR, regardless of the model's confidence or claimed evidence.
+Preserved spellings are recorded in the review decisions. The same guard also
+runs when applying saved reviews. This conservative policy can retain small
+genuine recognition errors too; it cannot recover typos that the initial OCR
+already normalized or omitted. Layout cleanup and larger OCR repairs remain
+available to the reviewer.

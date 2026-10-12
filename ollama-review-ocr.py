@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from collections import defaultdict
 from pathlib import Path
+from ocr_spelling import preserve_source_spellings
 
 
 DEFAULT_REVIEW_MODEL = "sec-ocr-review:latest"
@@ -259,6 +260,18 @@ Blocks:
             break
     if result is None:
         raise ValueError(f"page {page}: model returned incomplete or duplicate block IDs")
+    for block, decision in zip(blocks, result["decisions"]):
+        proposed = decision.get("text")
+        if isinstance(proposed, str):
+            text, preserved = preserve_source_spellings(str(block["text"]), proposed)
+            decision["text"] = text
+            if preserved:
+                decision["preserved_spellings"] = preserved
+                decision["notes"] = str(decision.get("notes", "")) + (
+                    " Source spelling guard retained: "
+                    + ", ".join(item["source"] for item in preserved)
+                    + ". Model correction claims do not override these spellings."
+                )
     return {
         "page": page,
         "extract_model": None if args.skip_extractor else args.extract_model,
