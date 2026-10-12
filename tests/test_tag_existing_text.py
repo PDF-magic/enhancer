@@ -19,6 +19,43 @@ spec.loader.exec_module(tagger)
 
 
 class ExistingTextTests(unittest.TestCase):
+    def test_chapter_label_and_question_title_produce_one_outline_entry(self):
+        for label in ("Chapter 3", "3", "Part Two"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as folder:
+                source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+                content = (
+                    f"BT /F1 10 Tf 1 0 0 1 190 700 Tm ({label}) Tj ET "
+                    "BT /F1 14 Tf 1 0 0 1 140 683 Tm (Why Should I Trade Stocks?) Tj ET"
+                ).encode()
+                with pikepdf.Pdf.new() as pdf:
+                    page = pdf.add_blank_page()
+                    page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                        F1=pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                                             BaseFont=pikepdf.Name('/Helvetica-Bold'),
+                                             Encoding=pikepdf.Name.WinAnsiEncoding),
+                    ))
+                    page.obj.Contents = pdf.make_stream(content)
+                    pdf.save(source)
+                report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+                title = label + " Why Should I Trade Stocks?"
+                self.assertEqual(report['headings'], [{'page': 1, 'level': 'H1', 'text': title}])
+                with pikepdf.open(output) as pdf:
+                    with pdf.open_outline() as outline:
+                        self.assertEqual([item.title for item in outline.root], [title])
+                    instructions = [item for item in pikepdf.parse_content_stream(pdf.pages[0])
+                                    if str(item.operator) not in {'BDC', 'BMC', 'EMC'}]
+                    original = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, content)))
+                    self.assertEqual(pikepdf.unparse_content_stream(instructions),
+                                     pikepdf.unparse_content_stream(original))
+
+    def test_chapter_label_does_not_absorb_body_or_distant_heading(self):
+        for size, bold, y in ((11, False, 683), (14, True, 600)):
+            with self.subTest(size=size, bold=bold, y=y):
+                lines = [tagger.OcrLine(0, 1, 'Chapter 3', 190, 700, 10, bold=True),
+                         tagger.OcrLine(2, 3, 'An unrelated paragraph', 72, y, size, bold=bold)]
+                self.assertEqual(len(tagger.merge_chapter_titles(lines, [14, 10])), 2)
+                self.assertEqual(lines[0].text, 'Chapter 3')
+
     def test_truetype_winansi_only_page_is_tagged_without_changing_content(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))

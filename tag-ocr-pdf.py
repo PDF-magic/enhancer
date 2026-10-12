@@ -688,6 +688,36 @@ def classify_existing_lines(lines: list[OcrLine], heading_sizes: list[float], re
                     break
 
 
+def merge_chapter_titles(lines: list[OcrLine], heading_sizes: list[float]) -> list[OcrLine]:
+    """Keep a nearby printed chapter label and its larger title in one heading."""
+    marker = re.compile(
+        r"(?:(?:chapter|part|appendix)\s+(?:\d+|[ivxlcdm]+|[a-z]|one|two|three|four|five|six|seven|eight|nine|ten)|\d+[.)]?|[ivxlcdm]+[.)]?)",
+        re.I,
+    )
+    merged = []
+    index = 0
+    while index < len(lines):
+        label = lines[index]
+        if index + 1 < len(lines) and label.bold and not label.artifact and marker.fullmatch(label.text.strip()):
+            title = lines[index + 1]
+            size = round(title.size, 2)
+            if (title.bold and not title.artifact and size in heading_sizes
+                and title.size >= label.size
+                and 0 < label.y - title.y <= 3 * title.size
+                and 1 <= len(title.text.split()) <= 14
+                and any(character.isalpha() for character in title.text)
+                and (title.heading is not None or title.size > label.size)):
+                label.text = label.text.strip() + " " + title.text.strip()
+                label.end = title.end
+                label.size = title.size
+                label.heading = "H" + str(min(6, heading_sizes.index(size) + 1))
+                label.table = False
+                index += 1
+        merged.append(label)
+        index += 1
+    return merged
+
+
 def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -> int:
     """Expose recognized heading tags as navigable PDF sections."""
     roots = []
@@ -842,6 +872,7 @@ def tag_pdf(
             classify_lines(lines, page_width, enabled_deep_headings)
             if is_page:
                 classify_existing_lines(lines, heading_sizes, repeated, page_width, existing_deep)
+                lines = merge_chapter_titles(lines, heading_sizes)
             blocks = build_blocks(lines)
 
             for block_number, block in enumerate(blocks, start=1):
