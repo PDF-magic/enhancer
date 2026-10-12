@@ -1,0 +1,1 @@
+this needs worknig on and doest do poer-word OCR confiintnec. it shoeld run ocmparison tetntes agagint old PR scenas and acteal typeos such as within your range in /Users/windsor/Desktop/1973 Reg of CAs and TAs.pdf.
