@@ -217,7 +217,7 @@ def extract_lines(
     for name, font in fonts.items():
         if font.get("/ToUnicode") is not None:
             mappings[str(name)] = unicode_map(font)
-        elif font.get("/Subtype") == Name("/Type1") and font.get("/Encoding") == Name("/WinAnsiEncoding"):
+        elif font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding"):
             mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace") for code in range(256)}
     bold_fonts = {str(name) for name, font in fonts.items() if "bold" in str(font.get("/BaseFont", "")).lower()}
     if not mappings:
@@ -633,7 +633,7 @@ def text_target(pdf: pikepdf.Pdf, page: pikepdf.Page) -> pikepdf.Object | None:
         return None  # Keep an existing document structure intact.
     fonts = page.obj.get("/Resources", Dictionary()).get("/Font", Dictionary())
     if fonts and any(font.get("/ToUnicode") is not None or (
-        font.get("/Subtype") == Name("/Type1") and font.get("/Encoding") == Name("/WinAnsiEncoding")
+        font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding")
     ) for font in fonts.values()):
         return page.obj
     return None

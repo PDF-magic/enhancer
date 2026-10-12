@@ -19,6 +19,51 @@ spec.loader.exec_module(tagger)
 
 
 class ExistingTextTests(unittest.TestCase):
+    def test_truetype_winansi_only_page_is_tagged_without_changing_content(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+            original = b"BT /F2 12 Tf 1 0 0 1 72 700 Tm (Investor\x92s caf\xe9) Tj ET"
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page()
+                font = pdf.make_indirect(pikepdf.Dictionary(
+                    Type=pikepdf.Name.Font, Subtype=pikepdf.Name.TrueType,
+                    BaseFont=pikepdf.Name("/TimesNewRomanPSMT"),
+                    Encoding=pikepdf.Name.WinAnsiEncoding,
+                ))
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(F2=font))
+                page.obj.Contents = pdf.make_stream(original)
+                pdf.save(source)
+            report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+            self.assertEqual(report["tagged_pages"], 1)
+            self.assertEqual(report["blocks"][0]["text"], "Investor’s café")
+            tagger.validate_output(output, 1)
+            with pikepdf.open(output) as pdf:
+                instructions = [item for item in pikepdf.parse_content_stream(pdf.pages[0])
+                                if str(item.operator) not in {"BDC", "BMC", "EMC"}]
+                before = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, original)))
+                self.assertEqual(pikepdf.unparse_content_stream(instructions),
+                                 pikepdf.unparse_content_stream(before))
+
+    def test_mixed_unicode_and_truetype_fonts_decode_without_missing_map(self):
+        with pikepdf.Pdf.new() as pdf:
+            page = pdf.add_blank_page()
+            unicode_font = pikepdf.Dictionary(
+                Subtype=pikepdf.Name.TrueType,
+                Encoding=pikepdf.Name.WinAnsiEncoding,
+                ToUnicode=pdf.make_stream(b"1 beginbfchar <41> <005A> endbfchar"),
+            )
+            winansi_font = pikepdf.Dictionary(
+                Subtype=pikepdf.Name.TrueType, Encoding=pikepdf.Name.WinAnsiEncoding,
+            )
+            page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                F1=unicode_font, F2=winansi_font,
+            ))
+            page.obj.Contents = pdf.make_stream(
+                b"BT /F1 12 Tf (A) Tj ET BT /F2 12 Tf (caf\xe9) Tj ET"
+            )
+            lines = tagger.extract_lines(page.obj, list(pikepdf.parse_content_stream(page)))
+            self.assertEqual([line.text for line in lines], ["Z", "café"])
+
     def test_heading_outline_preserves_hierarchy_and_page_destinations(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "sections.pdf"
