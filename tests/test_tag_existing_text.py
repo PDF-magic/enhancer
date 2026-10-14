@@ -19,6 +19,82 @@ spec.loader.exec_module(tagger)
 
 
 class ExistingTextTests(unittest.TestCase):
+    def test_retag_keeps_optional_content_scopes(self):
+        with pikepdf.Pdf.new() as pdf:
+            content = b'/OC /Layer BDC /P <</MCID 0>> BDC BT (visible) Tj ET EMC EMC /Artifact BMC 0 0 10 10 re f EMC'
+            instructions = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, content)))
+            retained = tagger.remove_structure_markers(instructions)
+            self.assertEqual([str(i.operator) for i in retained], ['BDC', 'BT', 'Tj', 'ET', 'EMC', 're', 'f'])
+            self.assertEqual(str(retained[0].operands[0]), '/OC')
+
+    def test_decorative_form_does_not_hide_native_or_ocr_text(self):
+        with pikepdf.Pdf.new() as pdf:
+            page = pdf.add_blank_page()
+            fonts = pikepdf.Dictionary(F1=pikepdf.Dictionary(
+                Subtype=pikepdf.Name.Type1, Encoding=pikepdf.Name.WinAnsiEncoding,
+                BaseFont=pikepdf.Name.Helvetica))
+            artwork = pdf.make_stream(b"0 0 10 10 re f")
+            artwork.Subtype = pikepdf.Name.Form
+            artwork.Resources = pikepdf.Dictionary()
+            ocr = pdf.make_stream(b"BT /F1 12 Tf (Actual text) Tj ET")
+            ocr.Subtype = pikepdf.Name.Form
+            ocr.Resources = pikepdf.Dictionary(Font=fonts)
+            page.obj.Resources = pikepdf.Dictionary(
+                Font=fonts, XObject=pikepdf.Dictionary(Artwork=artwork, OCR=ocr))
+            page.obj.Contents = pdf.make_stream(b"/Artwork Do /OCR Do")
+            self.assertEqual(tagger.text_target(pdf, page), ocr)
+            page.obj.Contents = pdf.make_stream(b"BT /F1 12 Tf (Native text) Tj ET /Artwork Do")
+            self.assertEqual(tagger.text_target(pdf, page), page.obj)
+            pdf.Root.StructTreeRoot = pikepdf.Dictionary()
+            self.assertIsNone(tagger.text_target(pdf, page))
+            self.assertEqual(tagger.text_target(pdf, page, True), page.obj)
+
+    def test_native_runs_and_wrapped_hyphens_preserve_words(self):
+        lines = [tagger.OcrLine(0, 1, 'It i', 72, 700, 12, raw_text='It i', right=90, native=True),
+                 tagger.OcrLine(2, 3, 's nine', 90, 700, 12, raw_text='s nine', right=125, native=True),
+                 tagger.OcrLine(4, 5, 'head-and-', 72, 680, 12, native=True),
+                 tagger.OcrLine(6, 7, 'shoulders', 72, 666, 12, native=True)]
+        merged = tagger.merge_native_fragments(lines)
+        self.assertEqual(merged[0].text, 'It is nine')
+        self.assertEqual(tagger.join_lines(merged[1:]), 'head-and-shoulders')
+        self.assertEqual(tagger.join_lines([
+            tagger.OcrLine(0, 1, 'wrap-', 72, 700, 12),
+            tagger.OcrLine(2, 3, 'ping', 72, 686, 12)]), 'wrapping')
+
+    def test_retag_preserves_metadata_outline_and_rendering_instructions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, again = (Path(folder) / name for name in ('source.pdf', 'output.pdf', 'again.pdf'))
+            content = b'/P <</MCID 0>> BDC BT /F1 12 Tf 1 0 0 1 72 700 Tm (First printed line) Tj 0 -14 Td (continues here.) Tj ET EMC'
+            metadata = b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta>'
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page()
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                    F1=pikepdf.Dictionary(Subtype=pikepdf.Name.Type1,
+                        Encoding=pikepdf.Name.WinAnsiEncoding, BaseFont=pikepdf.Name.Helvetica)))
+                page.obj.Contents = pdf.make_stream(content)
+                pdf.Root.StructTreeRoot = pikepdf.Dictionary()
+                pdf.docinfo.Author = 'John Wooten'
+                pdf.docinfo.Creator = 'John Wooten'
+                pdf.Root.Metadata = pdf.make_stream(metadata)
+                with pdf.open_outline() as outline:
+                    outline.root.append(pikepdf.OutlineItem('Custom chapter: title', 0))
+                pdf.save(source, fix_metadata_version=False)
+            for before, after in ((source, output), (output, again)):
+                report = tagger.tag_pdf(before, after, after.with_suffix('.json'), retag_existing=True)
+                self.assertEqual(report['blocks'][0]['text'], 'First printed line continues here.')
+                with pikepdf.open(after) as pdf:
+                    self.assertEqual(str(pdf.docinfo.Author), 'John Wooten')
+                    self.assertEqual(str(pdf.docinfo.Creator), 'John Wooten')
+                    self.assertEqual(pdf.Root.Metadata.read_bytes(), metadata)
+                    with pdf.open_outline() as outline:
+                        self.assertEqual(outline.root[0].title, 'Custom chapter: title')
+                    instructions = list(pikepdf.parse_content_stream(pdf.pages[0]))
+                    self.assertEqual(sum(str(i.operator) == 'BDC' for i in instructions), 1)
+                    visible = [i for i in instructions if str(i.operator) not in {'BDC', 'BMC', 'EMC'}]
+                    original = [i for i in pikepdf.parse_content_stream(pikepdf.Stream(pdf, content))
+                                if str(i.operator) not in {'BDC', 'BMC', 'EMC'}]
+                    self.assertEqual(pikepdf.unparse_content_stream(visible), pikepdf.unparse_content_stream(original))
+
     def test_chapter_label_and_question_title_produce_one_outline_entry(self):
         for label in ("Chapter 3", "3", "Part Two"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as folder:

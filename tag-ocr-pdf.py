@@ -63,7 +63,10 @@ class OcrLine:
     artifact: bool = False
     table: bool = False
     heading: str | None = None
+    raw_text: str | None = None
+    right: float | None = None
     bold: bool = False
+    native: bool = False
 
 
 @dataclass
@@ -93,6 +96,7 @@ def parse_args() -> argparse.Namespace:
         help="optional Ollama JSON/JSONL decisions produced by ollama-review-ocr.py",
     )
     parser.add_argument("--source-url", default="", help="original document URL to retain as pdfmagic:href")
+    parser.add_argument("--retag", action="store_true", help="rebuild existing text tags and ActualText; preserve existing bookmarks and metadata")
     parser.add_argument("--reported-input", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--reported-output", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -223,6 +227,24 @@ def extract_lines(
     if not mappings:
         raise ValueError("OCR Form XObject has no fonts")
 
+    def advance(font_name, operands, size):
+        font = fonts[font_name]
+        widths = font.get("/Widths")
+        first = int(font.get("/FirstChar", 0))
+        value = operands[0]
+        items = value if isinstance(value, Array) else [value]
+        result = 0.0
+        for item in items:
+            if isinstance(item, String):
+                if widths is not None:
+                    result += sum(float(widths[c-first]) if first <= c < first+len(widths) else 0
+                                  for c in bytes(item)) * size / 1000
+                else:
+                    result += len(decode_pdf_string(item, mappings[font_name])) * size * .5
+            else:
+                result -= float(item) * size / 1000
+        return result
+
     identity = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     ctm = identity
     stack: list[tuple[float, float, float, float, float, float]] = []
@@ -248,8 +270,13 @@ def extract_lines(
                 "y": 0.0,
                 "size": 0.0,
                 "positioned": False,
+                "advance": 0.0,
+                "break": False,
             }
         elif current is not None and operator in {"Td", "Tm"}:
+            if current["text"] and ((operator == "Td" and float(operands[1]) != 0)
+                                   or operator == "Tm"):
+                current["break"] = True
             if not current["positioned"]:
                 if operator == "Td":
                     local_x, local_y = float(operands[0]), float(operands[1])
@@ -260,11 +287,25 @@ def extract_lines(
         elif current is not None and operator == "Tf":
             current_font = str(operands[0])
             current["size"] = float(operands[1])
-        elif current is not None and operator in {"Tj", "TJ"}:
+        elif current is not None and operator in {"T*", "TD"}:
+            current["break"] = True
+        elif current is not None and operator in {"Tj", "TJ", "'", '"'}:
             mapping = mappings.get(current_font)
             if mapping is None:
                 raise ValueError(f"missing Unicode map for {current_font}")
-            current["text"].append(decode_show_text(operands, mapping))
+            text_operands = operands if operator == "TJ" else [operands[-1]]
+            if operator in {"'", '"'}:
+                current["break"] = True
+            decoded = decode_show_text(text_operands, mapping)
+            if current["break"] and current["text"] and decoded:
+                previous = "".join(current["text"])
+                tail = previous.split()[-1] if previous.split() else ""
+                url_continuation = re.search(r"(?:https?://|www\.|[\w.-]+\.[a-z]+/)", tail) and re.match(r"^[a-z0-9/?%._-]", decoded)
+                if not url_continuation and not previous.endswith(" ") and not decoded.startswith(" "):
+                    current["text"].append(" ")
+            current["break"] = False
+            current["text"].append(decoded)
+            current["advance"] += advance(current_font, text_operands, float(current["size"]))
         elif operator == "ET" and current is not None:
             text = "".join(current["text"]).strip()
             if text:
@@ -277,10 +318,35 @@ def extract_lines(
                         y=float(current["y"]),
                         size=float(current["size"]),
                         bold=current_font in bold_fonts,
+                        raw_text="".join(current["text"]),
+                        right=float(current["x"]) + float(current["advance"]),
                     )
                 )
             current = None
     return lines
+
+
+def merge_native_fragments(lines: list[OcrLine]) -> list[OcrLine]:
+    """Reassemble physical lines before treating font/style runs as paragraphs."""
+    merged: list[OcrLine] = []
+    for line in lines:
+        if merged:
+            previous = merged[-1]
+            gap = line.x - (previous.right if previous.right is not None else previous.x)
+            if abs(previous.y-line.y) < .25 and line.x >= previous.x and gap < max(previous.size, line.size)*3:
+                left = previous.raw_text if previous.raw_text is not None else previous.text
+                right = line.raw_text if line.raw_text is not None else line.text
+                separator = " " if (not left.endswith(" ") and not right.startswith(" ")
+                                    and (gap > max(previous.size, line.size)*.15
+                                         or (previous.bold and line.bold and re.fullmatch(r"[IVXLCDM]+\.", previous.text)))) else ""
+                previous.raw_text = left + separator + right
+                previous.text = previous.raw_text.strip()
+                previous.end = line.end
+                previous.right = line.right
+                previous.bold = previous.bold and line.bold
+                continue
+        merged.append(line)
+    return merged
 
 
 def letter_stats(text: str) -> tuple[int, float]:
@@ -400,7 +466,7 @@ def join_lines(lines: Iterable[OcrLine]) -> str:
         if not output:
             output = text
         elif output.endswith("-") and text and text[0].islower():
-            output = output[:-1] + text
+            output = (output if line.native else output[:-1]) + text
         else:
             output += " " + text
     return output
@@ -614,29 +680,55 @@ def mark_page_images_as_artifacts(pdf: pikepdf.Pdf, page: pikepdf.Page) -> None:
         )
 
 
+def has_extractable_text(target: pikepdf.Object) -> bool:
+    """Distinguish text layers from decorative vector Form XObjects."""
+    fonts = target.get("/Resources", Dictionary()).get("/Font", Dictionary())
+    if not any(font.get("/ToUnicode") is not None or (
+        font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")}
+        and font.get("/Encoding") == Name("/WinAnsiEncoding")
+    ) for font in fonts.values()):
+        return False
+    return any(str(item.operator) in {"Tj", "TJ", "'", '"'}
+               for item in pikepdf.parse_content_stream(target))
+
+
 def find_ocr_form(page: pikepdf.Page) -> pikepdf.Object | None:
     xobjects = page.obj.get("/Resources", Dictionary()).get("/XObject", Dictionary())
     forms = [
         item
         for item in xobjects.values()
-        if item.get("/Subtype") == Name("/Form") and item.get("/Resources")
+        if item.get("/Subtype") == Name("/Form") and has_extractable_text(item)
     ]
     return forms[0] if forms else None
 
 
-def text_target(pdf: pikepdf.Pdf, page: pikepdf.Page) -> pikepdf.Object | None:
+def text_target(pdf: pikepdf.Pdf, page: pikepdf.Page, retag_existing: bool = False) -> pikepdf.Object | None:
     """Use an OCR form, or the page's original text without rasterizing it."""
-    form = find_ocr_form(page)
-    if form is not None:
-        return form
-    if pdf.Root.get("/StructTreeRoot") is not None:
-        return None  # Keep an existing document structure intact.
-    fonts = page.obj.get("/Resources", Dictionary()).get("/Font", Dictionary())
-    if fonts and any(font.get("/ToUnicode") is not None or (
-        font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding")
-    ) for font in fonts.values()):
+    if has_extractable_text(page.obj):
+        if pdf.Root.get("/StructTreeRoot") is not None and not retag_existing:
+            return None  # Keep an existing document structure intact.
         return page.obj
-    return None
+    return find_ocr_form(page)
+
+
+def remove_structure_markers(instructions):
+    """Remove old text tags while preserving optional-content visibility scopes."""
+    retained = []
+    scopes = []
+    for item in instructions:
+        operator = str(item.operator)
+        if operator in {"BDC", "BMC"}:
+            properties = item.operands[1] if operator == "BDC" else None
+            remove = (str(item.operands[0]) == "/Artifact"
+                      or isinstance(properties, Dictionary) and "/MCID" in properties)
+            scopes.append(remove)
+            if remove:
+                continue
+        elif operator == "EMC" and scopes:
+            if scopes.pop():
+                continue
+        retained.append(item)
+    return retained
 
 
 def merge_heading_markers(lines: list[OcrLine]) -> list[OcrLine]:
@@ -755,6 +847,7 @@ def tag_pdf(
     reported_input: Path | None = None,
     reported_output: Path | None = None,
     source_url: str = "",
+    retag_existing: bool = False,
 ) -> dict[str, object]:
     if input_path.resolve() == output_path.resolve():
         raise ValueError("input and output must be different files")
@@ -791,13 +884,16 @@ def tag_pdf(
     reference_url = choose_source_url(original["href"], source_url)
     with pikepdf.open(input_path) as pdf:
         report["pages"] = len(pdf.pages)
-        targets = [text_target(pdf, page) for page in pdf.pages]
+        existing_outline = pdf.Root.get("/Outlines") is not None
+        targets = [text_target(pdf, page, retag_existing) for page in pdf.pages]
         extracted = []
         for target in targets:
             if target is None:
                 extracted.append(([], []))
                 continue
             instructions = list(pikepdf.parse_content_stream(target))
+            if retag_existing:
+                instructions = remove_structure_markers(instructions)
             extracted.append((instructions, extract_lines(target, instructions)))
         name_lines = []
         for page_number, (page, (_, lines)) in enumerate(zip(pdf.pages, extracted), start=1):
@@ -815,8 +911,9 @@ def tag_pdf(
         report["href"] = reference_url or None
         if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
-            apply_metadata(pdf, creator, reference_url)
-            pdf.save(output_path)
+            if not retag_existing:
+                apply_metadata(pdf, creator, reference_url)
+            pdf.save(output_path, fix_metadata_version=not retag_existing)
             report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
             return report
         deep_heading_pages = {level: set() for level in ("H3", "H4", "H5", "H6")}
@@ -868,6 +965,9 @@ def tag_pdf(
             bbox = page.mediabox if is_page else form.get("/BBox", Array([0, 0, 1, 1]))
             page_width = float(bbox[2]) - float(bbox[0])
             if is_page:
+                for line in lines:
+                    line.native = True
+                lines = merge_native_fragments(lines)
                 lines = merge_heading_markers(lines)
             classify_lines(lines, page_width, enabled_deep_headings)
             if is_page:
@@ -948,9 +1048,13 @@ def tag_pdf(
         pdf.Root["/StructTreeRoot"] = structure_root
         pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
         pdf.Root["/Lang"] = String("en-US")
-        report["outline_entries"] = write_heading_outline(pdf, report["headings"])
-        apply_metadata(pdf, creator, reference_url)
-        pdf.save(output_path)
+        if retag_existing and existing_outline:
+            report["preserved_existing_outline"] = True
+        else:
+            report["outline_entries"] = write_heading_outline(pdf, report["headings"])
+        if not retag_existing:
+            apply_metadata(pdf, creator, reference_url)
+        pdf.save(output_path, fix_metadata_version=not retag_existing)
 
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     return report
@@ -990,6 +1094,7 @@ def main() -> int:
             args.reported_input,
             args.reported_output,
             args.source_url,
+            args.retag,
         )
         validate_output(args.output, expected_pages, require_tags=report["tagged_pages"] > 0)
     except Exception as error:

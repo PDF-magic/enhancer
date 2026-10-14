@@ -37,6 +37,18 @@ bookmarks use the AI-reviewed heading text and levels when AI review is enabled.
 
 ## Create a much smaller derivative
 
+To rebuild paragraph copy text in an already tagged PDF, use:
+
+```sh
+python3 tag-ocr-pdf.py TAGGED.pdf RETAGGED.pdf --retag
+```
+
+This replaces text structure tags and paragraph `/ActualText`, preserves existing
+bookmarks and metadata, and leaves drawing instructions intact. Decorative
+vector Form objects are skipped when selecting a text layer. Native font runs
+are joined before paragraph detection, preserving printed hard hyphens.
+Clipboard behavior still depends on the PDF viewer honoring `/ActualText`.
+
 Create a new losslessly optimized derivative, then apply the same structure
 tags:
 
