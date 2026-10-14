@@ -124,6 +124,78 @@ class ExistingTextTests(unittest.TestCase):
                     self.assertEqual(pikepdf.unparse_content_stream(instructions),
                                      pikepdf.unparse_content_stream(original))
 
+    def test_chapter_labels_allow_alternate_numbering_and_print_styles(self):
+        cases = (
+            ("Chapter Eleven", True, False, True, 14),
+            ("Chap. 12", False, True, False, 14),
+            ("Part Twenty-One", False, True, False, 14),
+            ("Appendix B", False, False, True, 14),
+            ("Chapter 8", False, False, False, 17),
+            ("Chapter III", False, True, False, 14),
+        )
+        for label, label_bold, title_bold, title_italic, title_size in cases:
+            with self.subTest(label=label):
+                lines = [
+                    tagger.OcrLine(0, 1, label, 190, 700, 10, bold=label_bold),
+                    tagger.OcrLine(2, 3, "An Interesting Subject", 140, 683, title_size,
+                                   bold=title_bold, italic=title_italic),
+                ]
+                merged = tagger.merge_chapter_titles(lines, [], 612)
+                self.assertEqual(len(merged), 1)
+                self.assertEqual(merged[0].heading, "H1")
+                self.assertEqual(merged[0].text, label + " An Interesting Subject")
+
+    def test_chapter_merging_is_conservative_about_ordinary_text(self):
+        cases = (
+            ("Chapter 3", "An unrelated paragraph", 11, False, 140, 683),
+            ("Chapter 3", "An unrelated paragraph.", 17, False, 140, 683),
+            ("Chapter 3", "An unrelated paragraph", 17, False, 140, 683),
+            ("Chapter summary", "An Interesting Subject", 14, True, 140, 683),
+            ("Chapter 3", "An Interesting Subject", 14, True, 420, 683),
+            ("Chapter 3", "An Interesting Subject", 14, True, 140, 600),
+            ("3", "An Interesting Subject", 17, False, 140, 683),
+            ("Chapter 3", "An Interesting Subject", 9, True, 140, 683),
+        )
+        for label, title, size, bold, x, y in cases:
+            with self.subTest(label=label, title=title, size=size, x=x, y=y):
+                lines = [
+                    tagger.OcrLine(0, 1, label, 190, 700, 10, bold=True),
+                    tagger.OcrLine(2, 3, title, x, y, size, bold=bold),
+                ]
+                self.assertEqual(len(tagger.merge_chapter_titles(lines, [14, 10], 612)), 2)
+                self.assertEqual(lines[0].text, label)
+
+    def test_italic_chapter_title_retains_original_drawing_instructions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+            content = (
+                b"BT /F1 10 Tf 1 0 0 1 190 700 Tm (Chapter Eleven) Tj ET "
+                b"BT /F2 14 Tf 1 0 0 1 140 683 Tm (An Interesting Subject) Tj ET"
+            )
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page()
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                    F1=pikepdf.Dictionary(Subtype=pikepdf.Name.Type1,
+                                          BaseFont=pikepdf.Name.Helvetica,
+                                          Encoding=pikepdf.Name.WinAnsiEncoding),
+                    F2=pikepdf.Dictionary(Subtype=pikepdf.Name.Type1,
+                                          BaseFont=pikepdf.Name("/Times-Italic"),
+                                          Encoding=pikepdf.Name.WinAnsiEncoding),
+                ))
+                page.obj.Contents = pdf.make_stream(content)
+                pdf.save(source)
+            report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+            title = "Chapter Eleven An Interesting Subject"
+            self.assertEqual(report["headings"], [{"page": 1, "level": "H1", "text": title}])
+            with pikepdf.open(output) as pdf:
+                with pdf.open_outline() as outline:
+                    self.assertEqual([item.title for item in outline.root], [title])
+                instructions = [item for item in pikepdf.parse_content_stream(pdf.pages[0])
+                                if str(item.operator) not in {"BDC", "BMC", "EMC"}]
+                original = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, content)))
+                self.assertEqual(pikepdf.unparse_content_stream(instructions),
+                                 pikepdf.unparse_content_stream(original))
+
     def test_chapter_label_does_not_absorb_body_or_distant_heading(self):
         for size, bold, y in ((11, False, 683), (14, True, 600)):
             with self.subTest(size=size, bold=bold, y=y):

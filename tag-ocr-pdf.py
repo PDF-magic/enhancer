@@ -66,6 +66,7 @@ class OcrLine:
     raw_text: str | None = None
     right: float | None = None
     bold: bool = False
+    italic: bool = False
     native: bool = False
 
 
@@ -224,6 +225,9 @@ def extract_lines(
         elif font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding"):
             mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace") for code in range(256)}
     bold_fonts = {str(name) for name, font in fonts.items() if "bold" in str(font.get("/BaseFont", "")).lower()}
+    italic_fonts = {str(name) for name, font in fonts.items()
+                    if any(style in str(font.get("/BaseFont", "")).lower()
+                           for style in ("italic", "oblique"))}
     if not mappings:
         raise ValueError("OCR Form XObject has no fonts")
 
@@ -318,6 +322,7 @@ def extract_lines(
                         y=float(current["y"]),
                         size=float(current["size"]),
                         bold=current_font in bold_fonts,
+                        italic=current_font in italic_fonts,
                         raw_text="".join(current["text"]),
                         right=float(current["x"]) + float(current["advance"]),
                     )
@@ -344,6 +349,7 @@ def merge_native_fragments(lines: list[OcrLine]) -> list[OcrLine]:
                 previous.end = line.end
                 previous.right = line.right
                 previous.bold = previous.bold and line.bold
+                previous.italic = previous.italic and line.italic
                 continue
         merged.append(line)
     return merged
@@ -780,31 +786,56 @@ def classify_existing_lines(lines: list[OcrLine], heading_sizes: list[float], re
                     break
 
 
-def merge_chapter_titles(lines: list[OcrLine], heading_sizes: list[float]) -> list[OcrLine]:
-    """Keep a nearby printed chapter label and its larger title in one heading."""
-    marker = re.compile(
-        r"(?:(?:chapter|part|appendix)\s+(?:\d+|[ivxlcdm]+|[a-z]|one|two|three|four|five|six|seven|eight|nine|ten)|\d+[.)]?|[ivxlcdm]+[.)]?)",
+def merge_chapter_titles(lines: list[OcrLine], heading_sizes: list[float], page_width: float = 612) -> list[OcrLine]:
+    """Join confidently formatted chapter labels and titles, not nearby prose."""
+    named_label = re.compile(
+        r"(?:chapter|chap\.?|part|appendix)\s+(?:\d{1,3}|[ivxlcdm]{1,8}|[a-z]|"
+        r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+        r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+        r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+        r"(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?)",
         re.I,
     )
+    bare_label = re.compile(r"(?:\d{1,3}|[ivxlcdm]{1,8})[.)]?", re.I)
     merged = []
     index = 0
     while index < len(lines):
         label = lines[index]
-        if index + 1 < len(lines) and label.bold and not label.artifact and marker.fullmatch(label.text.strip()):
-            title = lines[index + 1]
-            size = round(title.size, 2)
-            if (title.bold and not title.artifact and size in heading_sizes
-                and title.size >= label.size
-                and 0 < label.y - title.y <= 3 * title.size
-                and 1 <= len(title.text.split()) <= 14
-                and any(character.isalpha() for character in title.text)
-                and (title.heading is not None or title.size > label.size)):
-                label.text = label.text.strip() + " " + title.text.strip()
-                label.end = title.end
-                label.size = title.size
-                label.heading = "H" + str(min(6, heading_sizes.index(size) + 1))
-                label.table = False
-                index += 1
+        if index + 1 < len(lines) and not label.artifact:
+            named = bool(named_label.fullmatch(label.text.strip()))
+            bare = bool(bare_label.fullmatch(label.text.strip()))
+            if named or bare:
+                title = lines[index + 1]
+                title_text = title.text.strip()
+                words = [w for w in title_text.split() if any(c.isalpha() for c in w)]
+                capitals = sum(w.lstrip('"“‘([—')[:1].isupper() for w in words)
+                title_like = bool(words) and (capitals / len(words) >= .6 or title_text.endswith(('?', '!')))
+                known_size = round(title.size, 2) in heading_sizes
+                larger = title.size >= label.size * 1.18
+                distinct_style = title.bold or title.italic
+                if (
+                    not title.artifact and not title.table
+                    and 1 <= len(title_text.split()) <= 14 and len(title_text) <= 120
+                    and not title_text.endswith('.') and title_like
+                    and 0 < label.y - title.y <= 3 * title.size
+                    and abs(label.x - title.x) <= max(96, page_width * .25)
+                    and title.size >= label.size
+                    and (
+                        (named and (
+                            (larger and (distinct_style or title.size >= label.size * 1.4))
+                            or (label.bold and title.bold and known_size and title.heading is not None)
+                        ))
+                        or (bare and label.bold and title.bold and known_size
+                            and (larger or title.heading is not None))
+                    )
+                ):
+                    label.text = label.text.strip() + " " + title_text
+                    label.end = title.end
+                    label.size = title.size
+                    level = 1 if named else min(6, heading_sizes.index(round(title.size, 2)) + 1)
+                    label.heading = f"H{level}"
+                    label.table = False
+                    index += 1
         merged.append(label)
         index += 1
     return merged
@@ -972,7 +1003,7 @@ def tag_pdf(
             classify_lines(lines, page_width, enabled_deep_headings)
             if is_page:
                 classify_existing_lines(lines, heading_sizes, repeated, page_width, existing_deep)
-                lines = merge_chapter_titles(lines, heading_sizes)
+                lines = merge_chapter_titles(lines, heading_sizes, page_width)
             blocks = build_blocks(lines)
 
             for block_number, block in enumerate(blocks, start=1):
