@@ -24,6 +24,23 @@ pages and replaces existing text in the new copy; the source remains unchanged.
 The AI pass reviews all pages with recognized blocks, applies reviewed text and
 tags, and writes a `.review.jsonl` alongside the PDF, text, and tagging report.
 
+Optionally add or override descriptive metadata while enhancing:
+
+```sh
+./ocr-scanned-pdf.sh SOURCE.pdf NEW-OCR.pdf \
+  --title "Example Title" \
+  --description "A summary of the document" \
+  --tags "finance, investing" \
+  --language en-US
+```
+
+The original authoring application is preserved as Creator where available;
+the person or organization belongs in Author and `dc:creator`. Descriptions
+map to PDF Subject and `dc:description`; tags to PDF Keywords,
+`pdf:Keywords`, and Dublin Core `dc:subject`. Other optional fields include
+`--author`, `--publisher`, `--rights`, and `--identifier`. Missing descriptive
+values are not guessed. The compress-and-tag workflow accepts these options too.
+
 The command refuses to overwrite files. It writes a searchable PDF, a text
 sidecar, and a JSON report containing every classified block. Body paragraphs
 use `P`; document parts/chapters/appendices use `H1`; primary sections use `H2`;
