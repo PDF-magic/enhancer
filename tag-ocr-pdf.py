@@ -23,6 +23,10 @@ import pikepdf
 from pikepdf import Array, Dictionary, Name, Operator, String
 
 from pdf_metadata import apply_metadata, choose_source_url, local_user_name, source_details, visible_creator
+from reading_order import (
+    group_native_runs, reconstruct_reading_order,
+    reorder_safe_text_units, order_changes, crosses_column_gutter,
+)
 
 
 MAJOR_HEADING = re.compile(
@@ -338,7 +342,7 @@ def merge_native_fragments(lines: list[OcrLine]) -> list[OcrLine]:
         if merged:
             previous = merged[-1]
             gap = line.x - (previous.right if previous.right is not None else previous.x)
-            if abs(previous.y-line.y) < .25 and line.x >= previous.x and gap < max(previous.size, line.size)*3:
+            if abs(previous.y-line.y) < .25 and line.x >= previous.x and gap < min(20., max(previous.size, line.size)*1.6):
                 left = previous.raw_text if previous.raw_text is not None else previous.text
                 right = line.raw_text if line.raw_text is not None else line.text
                 separator = " " if (not left.endswith(" ") and not right.startswith(" ")
@@ -554,7 +558,7 @@ def starts_new_paragraph(
     return False
 
 
-def build_blocks(lines: list[OcrLine]) -> list[LogicalBlock]:
+def build_blocks(lines: list[OcrLine], page_width: float | None = None) -> list[LogicalBlock]:
     if not lines:
         return []
     gap = typical_line_gap(lines)
@@ -609,6 +613,8 @@ def build_blocks(lines: list[OcrLine]) -> list[LogicalBlock]:
             vertical_gap = previous.y - line.y
             if line.y > previous.y + gap or vertical_gap > gap * 1.30:
                 category_changed = True
+        if page_width is not None and crosses_column_gutter(previous, line, page_width):
+            category_changed = True
         if category_changed or (
             not line.artifact
             and line.heading is None
@@ -908,6 +914,8 @@ def tag_pdf(
         "reviewed_blocks": 0,
         "review_warnings": [],
         "deep_heading_profile": {},
+        "physical_reordered_units": 0,
+        "layout_reordered_pages": 0,
     }
 
     original_path = reported_input if reported_input and reported_input.is_file() else input_path
@@ -918,14 +926,30 @@ def tag_pdf(
         existing_outline = pdf.Root.get("/Outlines") is not None
         targets = [text_target(pdf, page, retag_existing) for page in pdf.pages]
         extracted = []
-        for target in targets:
+        for page, target in zip(pdf.pages, targets):
             if target is None:
                 extracted.append(([], []))
                 continue
             instructions = list(pikepdf.parse_content_stream(target))
             if retag_existing:
                 instructions = remove_structure_markers(instructions)
-            extracted.append((instructions, extract_lines(target, instructions)))
+            lines = extract_lines(target, instructions)
+            if retag_existing and target.get("/Type") == Name("/Page") and lines:
+                page_width = float(page.mediabox[2]) - float(page.mediabox[0])
+                page_height = float(page.mediabox[3]) - float(page.mediabox[1])
+                physical_lines = group_native_runs(lines, page_width)
+                ordered = reconstruct_reading_order(
+                    physical_lines, page_width, page_height
+                )
+                instructions, moved = reorder_safe_text_units(
+                    instructions, lines, ordered
+                )
+                if moved:
+                    report["physical_reordered_units"] += moved
+                    # All source indices change when complete q ... Q drawing
+                    # scopes move. Never reuse the old line index ranges.
+                    lines = extract_lines(target, instructions)
+            extracted.append((instructions, lines))
         name_lines = []
         for page_number, (page, (_, lines)) in enumerate(zip(pdf.pages, extracted), start=1):
             if page_number <= 2 or page_number >= max(1, len(pdf.pages) - 4):
@@ -995,6 +1019,7 @@ def tag_pdf(
                 mark_page_images_as_artifacts(pdf, page)
             bbox = page.mediabox if is_page else form.get("/BBox", Array([0, 0, 1, 1]))
             page_width = float(bbox[2]) - float(bbox[0])
+            page_height = float(bbox[3]) - float(bbox[1])
             if is_page:
                 for line in lines:
                     line.native = True
@@ -1004,7 +1029,14 @@ def tag_pdf(
             if is_page:
                 classify_existing_lines(lines, heading_sizes, repeated, page_width, existing_deep)
                 lines = merge_chapter_titles(lines, heading_sizes, page_width)
-            blocks = build_blocks(lines)
+            # Build contiguous content-stream spans first, so a visually
+            # adjacent but physically interleaved column cannot cause an
+            # ActualText tag to swallow unrelated drawing instructions.
+            blocks = build_blocks(lines, page_width)
+            ordered_blocks = reconstruct_reading_order(blocks, page_width, page_height)
+            if order_changes(blocks, ordered_blocks):
+                report["layout_reordered_pages"] += 1
+            blocks = ordered_blocks
 
             for block_number, block in enumerate(blocks, start=1):
                 block_id = f"p{page_number:04d}-b{block_number:04d}"
