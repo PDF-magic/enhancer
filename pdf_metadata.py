@@ -11,7 +11,7 @@ import pikepdf
 
 PRODUCER = "PDF Magic Enhancer"
 SOURCE_NAMESPACE = "https://pdfmagic.org/ns/1.0/"
-SOFTWARE = re.compile(r"ocrmypdf|tesseract|pikepdf|acrobat|adobe|microsoft|word|libreoffice|chrom(?:e|ium)|pdfkit|reportlab|scanner|ghostscript", re.I)
+SOFTWARE = re.compile(r"ocrmypdf|tesseract|pikepdf|acrobat|adobe|microsoft|word|libreoffice|chrom(?:e|ium)|pdfkit|reportlab|scanner|ghostscript|google docs|apple pages|scribus|latex|overleaf|affinity", re.I)
 CLOSING = re.compile(r"^(?:sincerely(?: yours)?|respectfully(?: submitted)?|yours (?:truly|sincerely|faithfully)|(?:best|kind|warm) regards|regards|cordially|submitted by|signed by)[,:]?$", re.I)
 NOT_NAMES = set("annual report executive summary introduction conclusion confidential draft page file chapter section appendix department commission committee office securities exchange united states dear sincerely respectfully regards thank you submitted director president chief officer counsel attorney manager professor university street avenue road city county suite floor email phone fax federal preemption comments memorandum notice hearing minutes table contents".split())
 PARTICLES = {"de", "del", "da", "di", "van", "von", "der", "den", "al", "bin"}
@@ -133,21 +133,71 @@ def local_user_name():
     return username
 
 
-def source_details(path):
+def _first_text(value):
+    if isinstance(value, (list, tuple, set)):
+        values = sorted(value) if isinstance(value, set) else value
+        return next((clean_text(item) for item in values if clean_text(item)), "")
+    return clean_text(value)
+
+
+def _keywords(value):
+    if isinstance(value, (list, tuple, set)):
+        values = sorted(value) if isinstance(value, set) else value
+    else:
+        values = re.split(r"[,;]", clean_text(value))
+    seen = set()
+    result = []
+    for item in values:
+        keyword = clean_text(item)
+        if keyword and keyword.casefold() not in seen:
+            seen.add(keyword.casefold())
+            result.append(keyword)
+    return result
+
+
+def metadata_details(pdf):
+    """Read reusable descriptive metadata, excluding derivative-specific IDs/dates."""
     pikepdf.models.PdfMetadata.register_xml_namespace(SOURCE_NAMESPACE, "pdfmagic")
+    with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as metadata:
+        authors = metadata.get("dc:creator") or []
+        if isinstance(authors, str):
+            authors = [authors]
+        author = clean_text(pdf.docinfo.get("/Author")) or ", ".join(
+            clean_text(name) for name in authors if clean_text(name)
+        )
+        info_creator = clean_text(pdf.docinfo.get("/Creator"))
+        xmp_tool = _first_text(metadata.get("xmp:CreatorTool"))
+        if not author and info_creator and not SOFTWARE.search(info_creator):
+            author = person_name(info_creator) or ""
+
+        def authoring_tool(candidate):
+            if not candidate or candidate.casefold() == author.casefold():
+                return ""
+            if person_name(candidate) and not SOFTWARE.search(candidate):
+                return ""
+            return candidate
+
+        tool = authoring_tool(info_creator) or authoring_tool(xmp_tool)
+        keywords = metadata.get("dc:subject") or []
+        if not keywords:
+            keywords = metadata.get("pdf:Keywords") or pdf.docinfo.get("/Keywords") or ""
+        return {
+            "author": author if author and not SOFTWARE.search(author) else None,
+            "creator_tool": tool,
+            "title": clean_text(pdf.docinfo.get("/Title")) or _first_text(metadata.get("dc:title")),
+            "description": clean_text(pdf.docinfo.get("/Subject")) or _first_text(metadata.get("dc:description")),
+            "keywords": _keywords(keywords),
+            "publisher": _first_text(metadata.get("dc:publisher")),
+            "rights": _first_text(metadata.get("dc:rights")),
+            "language": _first_text(metadata.get("dc:language")) or clean_text(pdf.Root.get("/Lang")),
+            "identifier": _first_text(metadata.get("dc:identifier")),
+            "href": clean_text(metadata.get("pdfmagic:href")) or clean_text(pdf.docinfo.get("/PDFMagicSourceURL")),
+        }
+
+
+def source_details(path):
     with pikepdf.open(path) as pdf:
-        with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as metadata:
-            authors = metadata.get("dc:creator") or []
-            if isinstance(authors, str):
-                authors = [authors]
-            author = clean_text(pdf.docinfo.get("/Author")) or ", ".join(clean_text(name) for name in authors if name)
-            if not author:
-                creator = clean_text(pdf.docinfo.get("/Creator"))
-                author = person_name(creator) if not SOFTWARE.search(creator) else ""
-            return {
-                "author": author if author and not SOFTWARE.search(author) else None,
-                "href": clean_text(metadata.get("pdfmagic:href")) or clean_text(pdf.docinfo.get("/PDFMagicSourceURL")),
-            }
+        return metadata_details(pdf)
 
 
 def choose_source_url(existing, supplied):
@@ -163,16 +213,67 @@ def choose_source_url(existing, supplied):
     return supplied or existing
 
 
-def apply_metadata(pdf, creator, source_url=""):
+def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
+    """Map PDF Info and XMP without confusing the author with the creator app.
+
+    Only write existing or explicitly supplied descriptive values. If the
+    original PDF is available, prefer it over metadata inserted by OCR tools.
+    """
+    original = original if original is not None else metadata_details(pdf)
+    overrides = overrides or {}
+    author = clean_text(overrides.get("author")) or clean_text(author)
+    values = {key: original.get(key) for key in (
+        "title", "description", "keywords", "publisher", "rights", "language", "identifier"
+    )}
+    for key in values:
+        value = overrides.get(key)
+        if value and clean_text(value):
+            values[key] = _keywords(value) if key == "keywords" else clean_text(value)
+
+    creator_tool = clean_text(original.get("creator_tool"))
+    if creator_tool.casefold() == author.casefold():
+        creator_tool = ""
+    keywords = _keywords(values.get("keywords") or [])
     pikepdf.models.PdfMetadata.register_xml_namespace(SOURCE_NAMESPACE, "pdfmagic")
     with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as metadata:
-        metadata["dc:creator"] = [creator]
-        metadata["xmp:CreatorTool"] = creator
+        if author:
+            metadata["dc:creator"] = [author]
+        if creator_tool:
+            metadata["xmp:CreatorTool"] = creator_tool
+        elif "xmp:CreatorTool" in metadata:
+            del metadata["xmp:CreatorTool"]
         metadata["pdf:Producer"] = PRODUCER
+        for field, prop in (
+            ("title", "dc:title"),
+            ("description", "dc:description"),
+            ("rights", "dc:rights"),
+            ("identifier", "dc:identifier"),
+        ):
+            if values.get(field):
+                metadata[prop] = values[field]
+        for field, prop in (("publisher", "dc:publisher"), ("language", "dc:language")):
+            if values.get(field):
+                metadata[prop] = [values[field]]
+        if keywords:
+            metadata["dc:subject"] = set(keywords)
+            metadata["pdf:Keywords"] = ", ".join(keywords)
         if source_url:
             metadata["pdfmagic:href"] = source_url
-    pdf.docinfo["/Author"] = creator
-    pdf.docinfo["/Creator"] = creator
+            metadata["dc:source"] = source_url
+
+    if author:
+        pdf.docinfo["/Author"] = author
+    if creator_tool:
+        pdf.docinfo["/Creator"] = creator_tool
+    elif "/Creator" in pdf.docinfo:
+        del pdf.docinfo["/Creator"]
     pdf.docinfo["/Producer"] = PRODUCER
+    for field, prop in (("title", "/Title"), ("description", "/Subject")):
+        if values.get(field):
+            pdf.docinfo[prop] = values[field]
+    if keywords:
+        pdf.docinfo["/Keywords"] = ", ".join(keywords)
+    if values.get("language"):
+        pdf.Root["/Lang"] = pikepdf.String(values["language"])
     if "/PDFMagicSourceURL" in pdf.docinfo:
         del pdf.docinfo["/PDFMagicSourceURL"]

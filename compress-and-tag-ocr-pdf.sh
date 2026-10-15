@@ -2,14 +2,33 @@
 
 set -euo pipefail
 
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    printf 'Usage: ./compress-and-tag-ocr-pdf.sh INPUT.pdf OUTPUT.pdf [REVIEW.jsonl]\n' >&2
+if [[ $# -lt 2 ]]; then
+    printf 'Usage: ./compress-and-tag-ocr-pdf.sh INPUT.pdf OUTPUT.pdf [REVIEW.jsonl] [metadata options]\n' >&2
     exit 2
 fi
 
 input=$1
 output=$2
-review=${3:-}
+shift 2
+review=""
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    review=$1
+    shift
+fi
+metadata_options=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source-url|--title|--author|--description|--keywords|--tags|--publisher|--rights|--language|--identifier)
+            if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+                printf "Provide a value after %s.\n" "$1" >&2
+                exit 2
+            fi
+            metadata_options+=("$1" "$2")
+            shift 2
+            ;;
+        *) printf "Unknown option: %s\n" "$1" >&2; exit 2 ;;
+    esac
+done
 output_stem=${output%.*}
 compression_report="$output_stem.compression.json"
 tagging_report="$output_stem.tagging.json"
@@ -61,6 +80,7 @@ tagger_args=(
     --reported-input "$input"
     --reported-output "$output"
 )
+tagger_args+=("${metadata_options[@]}")
 if [[ -n "$review" ]]; then
     if [[ ! -f "$review" ]]; then
         printf 'Review file not found: %s\n' "$review" >&2

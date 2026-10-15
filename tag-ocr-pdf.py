@@ -101,6 +101,9 @@ def parse_args() -> argparse.Namespace:
         help="optional Ollama JSON/JSONL decisions produced by ollama-review-ocr.py",
     )
     parser.add_argument("--source-url", default="", help="original document URL to retain as pdfmagic:href")
+    for field in ("title", "author", "description", "keywords", "publisher", "rights", "language", "identifier"):
+        parser.add_argument(f"--{field}", default="", help=f"override or add document {field} metadata")
+    parser.add_argument("--tags", dest="keywords", help="comma-separated keyword tags (alias for --keywords)")
     parser.add_argument("--retag", action="store_true", help="rebuild existing text tags and ActualText; preserve existing bookmarks and metadata")
     parser.add_argument("--reported-input", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--reported-output", type=Path, help=argparse.SUPPRESS)
@@ -885,6 +888,7 @@ def tag_pdf(
     reported_output: Path | None = None,
     source_url: str = "",
     retag_existing: bool = False,
+    metadata_overrides: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if input_path.resolve() == output_path.resolve():
         raise ValueError("input and output must be different files")
@@ -921,6 +925,7 @@ def tag_pdf(
     original_path = reported_input if reported_input and reported_input.is_file() else input_path
     original = source_details(original_path)
     reference_url = choose_source_url(original["href"], source_url)
+    metadata_overrides = {key: value for key, value in (metadata_overrides or {}).items() if value and value.strip()}
     with pikepdf.open(input_path) as pdf:
         report["pages"] = len(pdf.pages)
         existing_outline = pdf.Root.get("/Outlines") is not None
@@ -958,6 +963,8 @@ def tag_pdf(
                                        "x": line.x, "y": line.y, "size": line.size,
                                        "height": float(page.mediabox[3]) - float(page.mediabox[1])})
         creator, creator_source = visible_creator(name_lines, len(pdf.pages))
+        if metadata_overrides.get("author"):
+            creator, creator_source = metadata_overrides["author"], "explicit metadata"
         if not creator:
             creator = original["author"] or local_user_name()
             creator_source = "document metadata" if original["author"] else "local user"
@@ -966,8 +973,8 @@ def tag_pdf(
         report["href"] = reference_url or None
         if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
-            if not retag_existing:
-                apply_metadata(pdf, creator, reference_url)
+            if not retag_existing or metadata_overrides:
+                apply_metadata(pdf, creator, reference_url, original=original, overrides=metadata_overrides)
             pdf.save(output_path, fix_metadata_version=not retag_existing)
             report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
             return report
@@ -1115,8 +1122,8 @@ def tag_pdf(
             report["preserved_existing_outline"] = True
         else:
             report["outline_entries"] = write_heading_outline(pdf, report["headings"])
-        if not retag_existing:
-            apply_metadata(pdf, creator, reference_url)
+        if not retag_existing or metadata_overrides:
+            apply_metadata(pdf, creator, reference_url, original=original, overrides=metadata_overrides)
         pdf.save(output_path, fix_metadata_version=not retag_existing)
 
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
@@ -1158,6 +1165,7 @@ def main() -> int:
             args.reported_output,
             args.source_url,
             args.retag,
+            {field: getattr(args, field) for field in ("title", "author", "description", "keywords", "publisher", "rights", "language", "identifier")},
         )
         validate_output(args.output, expected_pages, require_tags=report["tagged_pages"] > 0)
     except Exception as error:

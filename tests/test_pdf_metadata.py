@@ -74,14 +74,89 @@ class MetadataTests(unittest.TestCase):
             self.assertEqual(report["creator_source"], "document metadata")
             self.assertEqual(report["href"], href)
             with pikepdf.open(output) as pdf:
-                self.assertEqual(str(pdf.docinfo.Creator), "Document Author")
+                self.assertNotIn("/Creator", pdf.docinfo)
                 self.assertEqual(str(pdf.docinfo.Author), "Document Author")
                 self.assertEqual(str(pdf.docinfo.Producer), "PDF Magic Enhancer")
                 with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
                     self.assertEqual(xmp["dc:creator"], ["Document Author"])
-                    self.assertEqual(xmp["xmp:CreatorTool"], "Document Author")
+                    self.assertNotIn("xmp:CreatorTool", xmp)
                     self.assertEqual(xmp["pdf:Producer"], "PDF Magic Enhancer")
                     self.assertEqual(xmp["pdfmagic:href"], href)
+
+    def test_preserve_original_software_and_map_dublin_core(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, processed, output = (Path(folder) / name for name in ("original.pdf", "ocr.pdf", "enhanced.pdf"))
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo["/Author"] = "Jane Author"
+                pdf.docinfo["/Creator"] = "Google Docs"
+                pdf.docinfo["/Title"] = "Original Title"
+                pdf.docinfo["/Subject"] = "Original summary"
+                pdf.docinfo["/Keywords"] = "finance, investing"
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    xmp["dc:publisher"] = ["Small Publisher"]
+                    xmp["dc:rights"] = "CC BY-SA 4.0"
+                    xmp["dc:identifier"] = "ISBN 123"
+                    xmp["dc:language"] = ["en-US"]
+                pdf.save(source)
+            with pikepdf.open(source) as pdf:
+                pdf.docinfo["/Creator"] = "OCRmyPDF 17 / Tesseract"
+                pdf.docinfo["/Author"] = ""
+                pdf.docinfo["/Title"] = "Untitled OCR"
+                pdf.save(processed)
+            tagger.tag_pdf(processed, output, Path(folder) / "report.json", reported_input=source)
+            with pikepdf.open(output) as pdf:
+                self.assertEqual(str(pdf.docinfo["/Creator"]), "Google Docs")
+                self.assertEqual(str(pdf.docinfo["/Author"]), "Jane Author")
+                self.assertEqual(str(pdf.docinfo["/Producer"]), "PDF Magic Enhancer")
+                self.assertEqual(str(pdf.docinfo["/Title"]), "Original Title")
+                self.assertEqual(str(pdf.docinfo["/Subject"]), "Original summary")
+                self.assertEqual(str(pdf.docinfo["/Keywords"]), "finance, investing")
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    self.assertEqual(xmp["xmp:CreatorTool"], "Google Docs")
+                    self.assertEqual(xmp["dc:creator"], ["Jane Author"])
+                    self.assertEqual(xmp["dc:title"], "Original Title")
+                    self.assertEqual(xmp["dc:description"], "Original summary")
+                    self.assertEqual(xmp["dc:subject"], {"finance", "investing"})
+                    self.assertEqual(xmp["dc:publisher"], {"Small Publisher"})
+                    self.assertEqual(xmp["dc:rights"], "CC BY-SA 4.0")
+                    self.assertEqual(xmp["dc:identifier"], "ISBN 123")
+                    self.assertEqual(xmp["dc:language"], {"en-US"})
+
+    def test_optional_metadata_and_keyword_tags_without_made_up_creator(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo["/Author"] = "Real Author"
+                pdf.docinfo["/Creator"] = "Real Author"  # Legacy PDF Magic value
+                pdf.save(source)
+            tagger.tag_pdf(source, output, Path(folder) / "report.json", metadata_overrides={
+                "title": "New Title",
+                "author": "Chosen Author",
+                "description": "Reader-facing summary",
+                "keywords": "Markets, stocks, markets, ETFs",
+                "publisher": "Example Publisher",
+                "rights": "CC BY-SA 4.0",
+                "language": "en-US",
+                "identifier": "978-1-2345",
+            })
+            with pikepdf.open(output) as pdf:
+                self.assertNotIn("/Creator", pdf.docinfo)
+                self.assertEqual(str(pdf.docinfo["/Author"]), "Chosen Author")
+                self.assertEqual(str(pdf.docinfo["/Title"]), "New Title")
+                self.assertEqual(str(pdf.docinfo["/Subject"]), "Reader-facing summary")
+                self.assertEqual(str(pdf.docinfo["/Keywords"]), "Markets, stocks, ETFs")
+                self.assertEqual(str(pdf.Root["/Lang"]), "en-US")
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    self.assertNotIn("xmp:CreatorTool", xmp)
+                    self.assertEqual(xmp["dc:creator"], ["Chosen Author"])
+                    self.assertEqual(xmp["dc:subject"], {"Markets", "stocks", "ETFs"})
+                    self.assertEqual(xmp["pdf:Keywords"], "Markets, stocks, ETFs")
+                    self.assertEqual(xmp["dc:publisher"], {"Example Publisher"})
+                    self.assertEqual(xmp["dc:rights"], "CC BY-SA 4.0")
+                    self.assertEqual(xmp["dc:language"], ["en-US"])
+                    self.assertEqual(xmp["dc:identifier"], "978-1-2345")
 
     def test_original_author_metadata_survives_ocr_creator_overwrite(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -131,7 +206,7 @@ class MetadataTests(unittest.TestCase):
             self.assertEqual(report["creator"], "Jane Documentauthor")
             self.assertEqual(report["creator_source"], "signature")
             with pikepdf.open(output) as pdf:
-                self.assertEqual(str(pdf.docinfo.Creator), "Jane Documentauthor")
+                self.assertNotIn("/Creator", pdf.docinfo)
                 self.assertEqual(str(pdf.docinfo.Producer), "PDF Magic Enhancer")
 
 
