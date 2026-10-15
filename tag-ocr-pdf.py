@@ -760,16 +760,89 @@ def preserved_text_headings(input_path: Path) -> list[dict[str, object]]:
             if any(other is not line and min(line.y1, other.y1) > max(line.y0, other.y0)
                    for other in lines):
                 continue
-            candidates.append((line, text))
+            letters = [char for char in chars if char.get_text().isalpha()]
+            italic = sum(any(style in char.fontname.lower() for style in ("italic", "oblique"))
+                         for char in letters) > len(letters) / 2
+            candidates.append((line, text, "H3" if italic else "H2"))
         candidates.sort(key=lambda item: -item[0].y1)
         previous = None
-        for line, text in candidates:
-            if previous is not None and 0 <= previous.y0 - line.y1 <= line.height * .6:
+        for line, text, level in candidates:
+            if (previous is not None and headings[-1]["level"] == level
+                and 0 <= previous.y0 - line.y1 <= line.height * .6):
                 headings[-1]["text"] += " " + text
             else:
-                headings.append({"level": "H1", "text": text, "page": page_number})
+                headings.append({"level": level, "text": text, "page": page_number})
             previous = line
     return headings
+
+
+def promote_preserved_headings(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -> int:
+    """Promote exact matching paragraph elements; retain MCIDs and inline styles."""
+    def key(text):
+        return re.sub(r"\s+", "", text)
+
+    promoted = 0
+    for page_number in sorted({heading["page"] for heading in headings}):
+        page = pdf.pages[page_number - 1]
+        fonts = page.obj.get("/Resources", Dictionary()).get("/Font", Dictionary())
+        mappings = {}
+        for name, font in fonts.items():
+            if font.get("/ToUnicode") is not None:
+                mappings[str(name)] = unicode_map(font)
+            elif font.get("/Encoding") == Name("/WinAnsiEncoding"):
+                mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace")
+                                       for code in range(256)}
+        text_by_mcid = {}
+        stack = []
+        font_name = None
+        for instruction in pikepdf.parse_content_stream(page):
+            op, args = str(instruction.operator), instruction.operands
+            if op == "Tf":
+                font_name = str(args[0])
+            elif op in {"BDC", "BMC"}:
+                properties = args[1] if op == "BDC" else None
+                stack.append(int(properties.MCID) if isinstance(properties, Dictionary)
+                             and "/MCID" in properties else None)
+            elif op == "EMC":
+                if stack:
+                    stack.pop()
+            elif op in {"Tj", "TJ", "'", '"'} and stack and stack[-1] is not None:
+                mapping = mappings.get(font_name)
+                if mapping:
+                    operands = args if op in {"Tj", "TJ"} else [args[-1]]
+                    text_by_mcid.setdefault(stack[-1], [])
+                    text_by_mcid[stack[-1]].append(decode_show_text(operands, mapping))
+        wanted = {key(heading["text"]): heading["level"] for heading in headings
+                  if heading["page"] == page_number}
+
+        def element_text(item):
+            if isinstance(item, int):
+                return "".join(text_by_mcid.get(item, []))
+            if isinstance(item, Array):
+                return "".join(element_text(child) for child in item)
+            if isinstance(item, Dictionary):
+                if "/MCID" in item:
+                    return "".join(text_by_mcid.get(int(item.MCID), []))
+                return element_text(item.get("/K"))
+            return ""
+
+        def visit(item, inherited_page=None):
+            nonlocal promoted
+            if isinstance(item, Array):
+                for child in item:
+                    visit(child, inherited_page)
+            elif isinstance(item, Dictionary):
+                owner = item.get("/Pg", inherited_page)
+                if (owner is not None and owner.objgen == page.obj.objgen
+                    and item.get("/S") == Name("/P")):
+                    level = wanted.get(key(element_text(item.get("/K"))))
+                    if level:
+                        item["/S"] = Name("/" + level)
+                        promoted += 1
+                visit(item.get("/K"), owner)
+
+        visit(pdf.Root.StructTreeRoot.get("/K"))
+    return promoted
 
 
 def tag_pdf(
@@ -847,6 +920,7 @@ def tag_pdf(
             if pdf.Root.get("/StructTreeRoot") is not None and not has_outline:
                 report["headings"] = preserved_text_headings(input_path)
                 report["outline_entries"] = write_heading_outline(pdf, report["headings"])
+                report["promoted_heading_tags"] = promote_preserved_headings(pdf, report["headings"])
             apply_metadata(pdf, creator, reference_url)
             pdf.save(output_path)
             report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")

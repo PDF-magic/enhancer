@@ -123,6 +123,45 @@ class ExistingTextTests(unittest.TestCase):
                     self.assertEqual(outline.root[0].title, "Overview")
                     self.assertEqual(outline.root[0].destination[0].objgen, pdf.pages[0].obj.objgen)
 
+    def test_mixed_italic_heading_becomes_h3_with_inline_style_preserved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+            content = (b"BT /F1 12 Tf /P << /MCID 0 >> BDC "
+                       b"1 0 0 1 276 650 Tm (Overview) Tj EMC "
+                       b"/P << /MCID 1 >> BDC /F2 12 Tf "
+                       b"1 0 0 1 258 600 Tm (The Rule Filing) Tj EMC "
+                       b"/Span << /MCID 2 >> BDC /F1 12 Tf ( 1975) Tj EMC "
+                       b"/P << /MCID 3 >> BDC 1 0 0 1 72 570 Tm "
+                       b"(This is ordinary body prose filling the full measure across the page to its right margin.) Tj EMC ET")
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page(page_size=(612, 792))
+                def font(name):
+                    return pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                        BaseFont=pikepdf.Name('/' + name), Encoding=pikepdf.Name.WinAnsiEncoding)
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                    F1=font("Times-Roman"), F2=font("Times-Italic")))
+                page.obj.Contents = pdf.make_stream(content)
+                style = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.Span, K=2))
+                title = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, Pg=page.obj,
+                    K=pikepdf.Array([1, style])))
+                pdf.Root.StructTreeRoot = pdf.make_indirect(pikepdf.Dictionary(
+                    Type=pikepdf.Name.StructTreeRoot, K=pikepdf.Array([
+                        pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, Pg=page.obj, K=0)),
+                        title])))
+                pdf.save(source)
+            report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+            self.assertEqual([(h["text"], h["level"]) for h in report["headings"]],
+                             [("Overview", "H2"), ("The Rule Filing 1975", "H3")])
+            self.assertEqual(report["promoted_heading_tags"], 2)
+            with pikepdf.open(output) as pdf:
+                self.assertEqual(pdf.pages[0].Contents.read_bytes(), content)
+                title = pdf.Root.StructTreeRoot.K[1]
+                self.assertEqual(title.S, pikepdf.Name.H3)
+                self.assertEqual(title.K[1].S, pikepdf.Name.Span)
+                self.assertEqual(title.K[1].K, 2)
+                with pdf.open_outline() as outline:
+                    self.assertEqual(outline.root[0].children[0].title, "The Rule Filing 1975")
+
     def test_no_new_ocr_preserves_existing_content_and_structure(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / "source.pdf"
