@@ -19,6 +19,191 @@ spec.loader.exec_module(tagger)
 
 
 class ExistingTextTests(unittest.TestCase):
+    def test_retag_keeps_optional_content_scopes(self):
+        with pikepdf.Pdf.new() as pdf:
+            content = b'/OC /Layer BDC /P <</MCID 0>> BDC BT (visible) Tj ET EMC EMC /Artifact BMC 0 0 10 10 re f EMC'
+            instructions = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, content)))
+            retained = tagger.remove_structure_markers(instructions)
+            self.assertEqual([str(i.operator) for i in retained], ['BDC', 'BT', 'Tj', 'ET', 'EMC', 're', 'f'])
+            self.assertEqual(str(retained[0].operands[0]), '/OC')
+
+    def test_decorative_form_does_not_hide_native_or_ocr_text(self):
+        with pikepdf.Pdf.new() as pdf:
+            page = pdf.add_blank_page()
+            fonts = pikepdf.Dictionary(F1=pikepdf.Dictionary(
+                Subtype=pikepdf.Name.Type1, Encoding=pikepdf.Name.WinAnsiEncoding,
+                BaseFont=pikepdf.Name.Helvetica))
+            artwork = pdf.make_stream(b"0 0 10 10 re f")
+            artwork.Subtype = pikepdf.Name.Form
+            artwork.Resources = pikepdf.Dictionary()
+            ocr = pdf.make_stream(b"BT /F1 12 Tf (Actual text) Tj ET")
+            ocr.Subtype = pikepdf.Name.Form
+            ocr.Resources = pikepdf.Dictionary(Font=fonts)
+            page.obj.Resources = pikepdf.Dictionary(
+                Font=fonts, XObject=pikepdf.Dictionary(Artwork=artwork, OCR=ocr))
+            page.obj.Contents = pdf.make_stream(b"/Artwork Do /OCR Do")
+            self.assertEqual(tagger.text_target(pdf, page), ocr)
+            page.obj.Contents = pdf.make_stream(b"BT /F1 12 Tf (Native text) Tj ET /Artwork Do")
+            self.assertEqual(tagger.text_target(pdf, page), page.obj)
+            pdf.Root.StructTreeRoot = pikepdf.Dictionary()
+            self.assertIsNone(tagger.text_target(pdf, page))
+            self.assertEqual(tagger.text_target(pdf, page, True), page.obj)
+
+    def test_native_runs_and_wrapped_hyphens_preserve_words(self):
+        lines = [tagger.OcrLine(0, 1, 'It i', 72, 700, 12, raw_text='It i', right=90, native=True),
+                 tagger.OcrLine(2, 3, 's nine', 90, 700, 12, raw_text='s nine', right=125, native=True),
+                 tagger.OcrLine(4, 5, 'head-and-', 72, 680, 12, native=True),
+                 tagger.OcrLine(6, 7, 'shoulders', 72, 666, 12, native=True)]
+        merged = tagger.merge_native_fragments(lines)
+        self.assertEqual(merged[0].text, 'It is nine')
+        self.assertEqual(tagger.join_lines(merged[1:]), 'head-and-shoulders')
+        self.assertEqual(tagger.join_lines([
+            tagger.OcrLine(0, 1, 'wrap-', 72, 700, 12),
+            tagger.OcrLine(2, 3, 'ping', 72, 686, 12)]), 'wrapping')
+
+    def test_retag_preserves_metadata_outline_and_rendering_instructions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, again = (Path(folder) / name for name in ('source.pdf', 'output.pdf', 'again.pdf'))
+            content = b'/P <</MCID 0>> BDC BT /F1 12 Tf 1 0 0 1 72 700 Tm (First printed line) Tj 0 -14 Td (continues here.) Tj ET EMC'
+            metadata = b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta>'
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page()
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                    F1=pikepdf.Dictionary(Subtype=pikepdf.Name.Type1,
+                        Encoding=pikepdf.Name.WinAnsiEncoding, BaseFont=pikepdf.Name.Helvetica)))
+                page.obj.Contents = pdf.make_stream(content)
+                pdf.Root.StructTreeRoot = pikepdf.Dictionary()
+                pdf.docinfo.Author = 'John Wooten'
+                pdf.docinfo.Creator = 'John Wooten'
+                pdf.Root.Metadata = pdf.make_stream(metadata)
+                with pdf.open_outline() as outline:
+                    outline.root.append(pikepdf.OutlineItem('Custom chapter: title', 0))
+                pdf.save(source, fix_metadata_version=False)
+            for before, after in ((source, output), (output, again)):
+                report = tagger.tag_pdf(before, after, after.with_suffix('.json'), retag_existing=True)
+                self.assertEqual(report['blocks'][0]['text'], 'First printed line continues here.')
+                with pikepdf.open(after) as pdf:
+                    self.assertEqual(str(pdf.docinfo.Author), 'John Wooten')
+                    self.assertEqual(str(pdf.docinfo.Creator), 'John Wooten')
+                    self.assertEqual(pdf.Root.Metadata.read_bytes(), metadata)
+                    with pdf.open_outline() as outline:
+                        self.assertEqual(outline.root[0].title, 'Custom chapter: title')
+                    instructions = list(pikepdf.parse_content_stream(pdf.pages[0]))
+                    self.assertEqual(sum(str(i.operator) == 'BDC' for i in instructions), 1)
+                    visible = [i for i in instructions if str(i.operator) not in {'BDC', 'BMC', 'EMC'}]
+                    original = [i for i in pikepdf.parse_content_stream(pikepdf.Stream(pdf, content))
+                                if str(i.operator) not in {'BDC', 'BMC', 'EMC'}]
+                    self.assertEqual(pikepdf.unparse_content_stream(visible), pikepdf.unparse_content_stream(original))
+
+    def test_chapter_label_and_question_title_produce_one_outline_entry(self):
+        for label in ("Chapter 3", "3", "Part Two"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as folder:
+                source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+                content = (
+                    f"BT /F1 10 Tf 1 0 0 1 190 700 Tm ({label}) Tj ET "
+                    "BT /F1 14 Tf 1 0 0 1 140 683 Tm (Why Should I Trade Stocks?) Tj ET"
+                ).encode()
+                with pikepdf.Pdf.new() as pdf:
+                    page = pdf.add_blank_page()
+                    page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                        F1=pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                                             BaseFont=pikepdf.Name('/Helvetica-Bold'),
+                                             Encoding=pikepdf.Name.WinAnsiEncoding),
+                    ))
+                    page.obj.Contents = pdf.make_stream(content)
+                    pdf.save(source)
+                report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+                title = label + " Why Should I Trade Stocks?"
+                self.assertEqual(report['headings'], [{'page': 1, 'level': 'H1', 'text': title}])
+                with pikepdf.open(output) as pdf:
+                    with pdf.open_outline() as outline:
+                        self.assertEqual([item.title for item in outline.root], [title])
+                    instructions = [item for item in pikepdf.parse_content_stream(pdf.pages[0])
+                                    if str(item.operator) not in {'BDC', 'BMC', 'EMC'}]
+                    original = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, content)))
+                    self.assertEqual(pikepdf.unparse_content_stream(instructions),
+                                     pikepdf.unparse_content_stream(original))
+
+    def test_chapter_labels_allow_alternate_numbering_and_print_styles(self):
+        cases = (
+            ("Chapter Eleven", True, False, True, 14),
+            ("Chap. 12", False, True, False, 14),
+            ("Part Twenty-One", False, True, False, 14),
+            ("Appendix B", False, False, True, 14),
+            ("Chapter 8", False, False, False, 17),
+            ("Chapter III", False, True, False, 14),
+        )
+        for label, label_bold, title_bold, title_italic, title_size in cases:
+            with self.subTest(label=label):
+                lines = [
+                    tagger.OcrLine(0, 1, label, 190, 700, 10, bold=label_bold),
+                    tagger.OcrLine(2, 3, "An Interesting Subject", 140, 683, title_size,
+                                   bold=title_bold, italic=title_italic),
+                ]
+                merged = tagger.merge_chapter_titles(lines, [], 612)
+                self.assertEqual(len(merged), 1)
+                self.assertEqual(merged[0].heading, "H1")
+                self.assertEqual(merged[0].text, label + " An Interesting Subject")
+
+    def test_chapter_merging_is_conservative_about_ordinary_text(self):
+        cases = (
+            ("Chapter 3", "An unrelated paragraph", 11, False, 140, 683),
+            ("Chapter 3", "An unrelated paragraph.", 17, False, 140, 683),
+            ("Chapter 3", "An unrelated paragraph", 17, False, 140, 683),
+            ("Chapter summary", "An Interesting Subject", 14, True, 140, 683),
+            ("Chapter 3", "An Interesting Subject", 14, True, 420, 683),
+            ("Chapter 3", "An Interesting Subject", 14, True, 140, 600),
+            ("3", "An Interesting Subject", 17, False, 140, 683),
+            ("Chapter 3", "An Interesting Subject", 9, True, 140, 683),
+        )
+        for label, title, size, bold, x, y in cases:
+            with self.subTest(label=label, title=title, size=size, x=x, y=y):
+                lines = [
+                    tagger.OcrLine(0, 1, label, 190, 700, 10, bold=True),
+                    tagger.OcrLine(2, 3, title, x, y, size, bold=bold),
+                ]
+                self.assertEqual(len(tagger.merge_chapter_titles(lines, [14, 10], 612)), 2)
+                self.assertEqual(lines[0].text, label)
+
+    def test_italic_chapter_title_retains_original_drawing_instructions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+            content = (
+                b"BT /F1 10 Tf 1 0 0 1 190 700 Tm (Chapter Eleven) Tj ET "
+                b"BT /F2 14 Tf 1 0 0 1 140 683 Tm (An Interesting Subject) Tj ET"
+            )
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page()
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                    F1=pikepdf.Dictionary(Subtype=pikepdf.Name.Type1,
+                                          BaseFont=pikepdf.Name.Helvetica,
+                                          Encoding=pikepdf.Name.WinAnsiEncoding),
+                    F2=pikepdf.Dictionary(Subtype=pikepdf.Name.Type1,
+                                          BaseFont=pikepdf.Name("/Times-Italic"),
+                                          Encoding=pikepdf.Name.WinAnsiEncoding),
+                ))
+                page.obj.Contents = pdf.make_stream(content)
+                pdf.save(source)
+            report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+            title = "Chapter Eleven An Interesting Subject"
+            self.assertEqual(report["headings"], [{"page": 1, "level": "H1", "text": title}])
+            with pikepdf.open(output) as pdf:
+                with pdf.open_outline() as outline:
+                    self.assertEqual([item.title for item in outline.root], [title])
+                instructions = [item for item in pikepdf.parse_content_stream(pdf.pages[0])
+                                if str(item.operator) not in {"BDC", "BMC", "EMC"}]
+                original = list(pikepdf.parse_content_stream(pikepdf.Stream(pdf, content)))
+                self.assertEqual(pikepdf.unparse_content_stream(instructions),
+                                 pikepdf.unparse_content_stream(original))
+
+    def test_chapter_label_does_not_absorb_body_or_distant_heading(self):
+        for size, bold, y in ((11, False, 683), (14, True, 600)):
+            with self.subTest(size=size, bold=bold, y=y):
+                lines = [tagger.OcrLine(0, 1, 'Chapter 3', 190, 700, 10, bold=True),
+                         tagger.OcrLine(2, 3, 'An unrelated paragraph', 72, y, size, bold=bold)]
+                self.assertEqual(len(tagger.merge_chapter_titles(lines, [14, 10])), 2)
+                self.assertEqual(lines[0].text, 'Chapter 3')
+
     def test_truetype_winansi_only_page_is_tagged_without_changing_content(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
