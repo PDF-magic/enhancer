@@ -717,6 +717,61 @@ def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -
     return count
 
 
+def preserved_text_headings(input_path: Path) -> list[dict[str, object]]:
+    """Find centered, isolated printed titles without rewriting existing tags.
+
+    pdfminer is supplied by OCRmyPDF. Layout extraction handles PDFs that put
+    an entire page inside one BT/ET object, unlike the OCR tagging parser.
+    """
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTChar, LTTextLine
+
+    headings = []
+    for page_number, page in enumerate(extract_pages(input_path), start=1):
+        lines = []
+
+        def collect(item):
+            if isinstance(item, LTTextLine):
+                lines.append(item)
+            elif hasattr(item, "__iter__"):
+                for child in item:
+                    collect(child)
+
+        collect(page)
+        body_lines = [line for line in lines if line.width > page.width * .65]
+        if not body_lines:
+            continue
+        body_left = statistics.median(line.x0 for line in body_lines)
+        body_right = statistics.median(line.x1 for line in body_lines)
+        candidates = []
+        for line in lines:
+            text = re.sub(r"\s+", " ", line.get_text()).strip()
+            words = [word for word in text.split() if word[0].isalpha()]
+            chars = [char for char in line if isinstance(char, LTChar)]
+            if (not words or not chars or not 4 <= len(text) <= 180
+                or len(words) > 18 or WORD_END.search(text)
+                or text.endswith((",", ";", ":"))
+                or not page.height * .15 < line.y0 < page.height * .90
+                or abs((line.x0 + line.x1) / 2 - page.width / 2) > page.width * .025
+                or line.x0 < body_left + 8 or line.x1 > body_right - 8
+                or sum(word[0].isupper() for word in words) / len(words) < .55):
+                continue
+            # Reject fragments sharing a row with prose or another column.
+            if any(other is not line and min(line.y1, other.y1) > max(line.y0, other.y0)
+                   for other in lines):
+                continue
+            candidates.append((line, text))
+        candidates.sort(key=lambda item: -item[0].y1)
+        previous = None
+        for line, text in candidates:
+            if previous is not None and 0 <= previous.y0 - line.y1 <= line.height * .6:
+                headings[-1]["text"] += " " + text
+            else:
+                headings.append({"level": "H1", "text": text, "page": page_number})
+            previous = line
+    return headings
+
+
 def tag_pdf(
     input_path: Path,
     output_path: Path,
@@ -785,6 +840,13 @@ def tag_pdf(
         report["href"] = reference_url or None
         if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
+            # Existing paragraph tags do not imply navigable section bookmarks.
+            # Keep the original structure and content streams untouched.
+            with pdf.open_outline() as outline:
+                has_outline = bool(outline.root)
+            if pdf.Root.get("/StructTreeRoot") is not None and not has_outline:
+                report["headings"] = preserved_text_headings(input_path)
+                report["outline_entries"] = write_heading_outline(pdf, report["headings"])
             apply_metadata(pdf, creator, reference_url)
             pdf.save(output_path)
             report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")

@@ -99,6 +99,30 @@ class ExistingTextTests(unittest.TestCase):
             with pdf.open_outline() as outline:
                 self.assertEqual(outline.root[0].title, "Existing section")
 
+    def test_existing_tags_gain_outline_without_rewriting_page(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
+            content = (b"BT /F1 12 Tf 1 0 0 1 276 600 Tm (Overview) Tj "
+                       b"1 0 0 1 72 570 Tm (This is ordinary body prose filling the full measure across the page to its right margin.) Tj ET")
+            with pikepdf.Pdf.new() as pdf:
+                page = pdf.add_blank_page(page_size=(612, 792))
+                page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
+                    F1=pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                        BaseFont=pikepdf.Name("/Times-Roman"), Encoding=pikepdf.Name.WinAnsiEncoding)))
+                page.obj.Contents = pdf.make_stream(content)
+                pdf.Root.StructTreeRoot = pdf.make_indirect(pikepdf.Dictionary(
+                    Type=pikepdf.Name.StructTreeRoot, TestMarker="Keep original tags"))
+                pdf.save(source)
+            report = tagger.tag_pdf(source, output, Path(folder) / "report.json")
+            self.assertEqual(report["tagged_pages"], 0)
+            self.assertEqual(report["outline_entries"], 1)
+            with pikepdf.open(output) as pdf:
+                self.assertEqual(pdf.pages[0].Contents.read_bytes(), content)
+                self.assertEqual(str(pdf.Root.StructTreeRoot.TestMarker), "Keep original tags")
+                with pdf.open_outline() as outline:
+                    self.assertEqual(outline.root[0].title, "Overview")
+                    self.assertEqual(outline.root[0].destination[0].objgen, pdf.pages[0].obj.objgen)
+
     def test_no_new_ocr_preserves_existing_content_and_structure(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / "source.pdf"
