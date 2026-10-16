@@ -21,6 +21,32 @@ def line(text, y, page=1, size=12, x=72):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_labeled_keyword_date_moves_to_document_date(self):
+        with pikepdf.Pdf.new() as pdf:
+            pdf.add_blank_page()
+            pdf.docinfo.Keywords = "transfer agents; Date: 2009-08-04"
+            pdf.docinfo.CreationDate = "D:20090908180705"
+            with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                xmp["pdf:Keywords"] = "Date: 2009-08-04"
+                xmp["dc:subject"] = ["Date: 2009-08-04", "securities"]
+            metadata.apply_metadata(pdf, "Document Author")
+            self.assertEqual(str(pdf.docinfo.Keywords), "transfer agents")
+            self.assertEqual(str(pdf.docinfo.CreationDate), "D:20090908180705")
+            with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                self.assertNotIn("pdf:Keywords", xmp)
+                self.assertEqual(set(xmp["dc:subject"]), {"securities"})
+                self.assertEqual(xmp["dc:date"], ["2009-08-04"])
+
+    def test_ordinary_and_invalid_date_keywords_are_preserved(self):
+        for value in ("Date: 2009-02-30", "2009-08-04", "securities, transfer agents"):
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo.Keywords = value
+                metadata.apply_metadata(pdf, "Document Author")
+                self.assertEqual(str(pdf.docinfo.Keywords), value)
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    self.assertNotIn("dc:date", xmp)
+
     def test_signature_beats_recipient_and_letterhead(self):
         records = [line("Dr. Recipient Name", 700, size=28), line("Dear Dr. Recipient Name:", 600),
                    line("Body paragraph here.", 550), line("Respectfully submitted,", 200),

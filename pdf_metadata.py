@@ -1,6 +1,7 @@
 """Identify a document creator and keep PDF Magic metadata consistent."""
 
 from collections import Counter
+from datetime import date
 import getpass
 import os
 import re
@@ -163,9 +164,59 @@ def choose_source_url(existing, supplied):
     return supplied or existing
 
 
+def normalize_keyword_dates(pdf, metadata):
+    """Move explicitly labeled ISO document dates out of keyword fields."""
+    dates = []
+
+    def clean_keywords(value):
+        kept = []
+        removed = False
+        for token in re.split(r"[;,\n]", str(value or "")):
+            token = token.strip()
+            match = re.fullmatch(r"Date:\s*(\d{4}-\d{2}-\d{2})", token, re.I)
+            if match:
+                try:
+                    date.fromisoformat(match[1])
+                except ValueError:
+                    pass
+                else:
+                    removed = True
+                    if match[1] not in dates:
+                        dates.append(match[1])
+                    continue
+            if token:
+                kept.append(token)
+        # Preserve original punctuation and spacing when nothing was removed.
+        return "; ".join(kept) if removed else value
+
+    for container, field in ((pdf.docinfo, "/Keywords"), (metadata, "pdf:Keywords")):
+        if field in container:
+            original = str(container[field])
+            cleaned = clean_keywords(original)
+            if cleaned != original:
+                if cleaned:
+                    container[field] = cleaned
+                else:
+                    del container[field]
+    subjects = metadata.get("dc:subject")
+    if subjects:
+        subjects = [subjects] if isinstance(subjects, str) else subjects
+        cleaned = [clean_keywords(value) for value in subjects]
+        cleaned = [value for value in cleaned if value]
+        if cleaned:
+            metadata["dc:subject"] = cleaned
+        else:
+            del metadata["dc:subject"]
+    if dates:
+        existing = metadata.get("dc:date") or []
+        existing = [existing] if isinstance(existing, str) else list(existing)
+        metadata["dc:date"] = existing + [value for value in dates if value not in existing]
+
+
 def apply_metadata(pdf, creator, source_url=""):
     pikepdf.models.PdfMetadata.register_xml_namespace(SOURCE_NAMESPACE, "pdfmagic")
     with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as metadata:
+        normalize_keyword_dates(pdf, metadata)
         metadata["dc:creator"] = [creator]
         metadata["xmp:CreatorTool"] = creator
         metadata["pdf:Producer"] = PRODUCER
