@@ -119,3 +119,12 @@ The AI prompt treats names, initials, corporate names, dates, references,
 quantities, currency, percentages, and table values as protected evidence. A
 changed protected token is rejected unless the review supplies image-specific
 evidence at confidence 0.98 or higher. The scan remains authoritative.
+
+Word-internal tildes such as `self~regulatory` are flagged for image review.
+A tilde becomes a hyphen only with per-character visual evidence and both
+character and block confidence of at least 0.98. Ambiguous marks and legitimate
+tildes are retained; there is no global substitution. Rejected changes appear
+in the tagging report's `review_warnings`. Older saved reviews that change a
+tilde need to be regenerated to supply this evidence. Accepted corrections are
+written to the derivative's paragraph `/ActualText`; page drawing instructions
+and the source PDF remain unchanged.

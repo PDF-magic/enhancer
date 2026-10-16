@@ -23,6 +23,7 @@ import pikepdf
 from pikepdf import Array, Dictionary, Name, Operator, String
 
 from pdf_metadata import apply_metadata, choose_source_url, local_user_name, source_details, visible_creator
+from ocr_punctuation import tilde_change_warning
 from reading_order import (
     group_native_runs, reconstruct_reading_order,
     reorder_safe_text_units, order_changes, crosses_column_gutter,
@@ -531,6 +532,9 @@ def apply_review(
         and reviewed_text.strip()
         and reviewed_text != block.text
     ):
+        punctuation_warning = tilde_change_warning(block.text, reviewed_text, decision)
+        if punctuation_warning:
+            return True, punctuation_warning
         missing_sensitive = [
             token for token in protected_tokens(block.text) if token not in reviewed_text
         ]
