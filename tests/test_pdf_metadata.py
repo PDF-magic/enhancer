@@ -123,13 +123,66 @@ class MetadataTests(unittest.TestCase):
                     self.assertEqual(xmp["dc:identifier"], "ISBN 123")
                     self.assertEqual(xmp["dc:language"], {"en-US"})
 
-    def test_optional_metadata_and_keyword_tags_without_made_up_creator(self):
+    def test_sec_petition_creator_and_producer_survive_ocr_intermediary(self):
+        """Preserve eCopy and Acrobat provenance from the SEC petition PDF."""
+        with tempfile.TemporaryDirectory() as folder:
+            source, ocr, output = (Path(folder) / name for name in ("sta.pdf", "ocr.pdf", "enhanced.pdf"))
+            original_producer = "Adobe Acrobat 8.16 Paper Capture Plug-in"
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo["/Author"] = "Dechert LLP"
+                pdf.docinfo["/Creator"] = "eCopy, Inc"
+                pdf.docinfo["/Producer"] = original_producer
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    xmp["xmp:CreatorTool"] = "eCopy, Inc"
+                    xmp["pdf:Producer"] = original_producer
+                pdf.save(source)
+            with pikepdf.open(source) as pdf:
+                pdf.docinfo["/Creator"] = "OCRmyPDF 17 / Tesseract"
+                pdf.docinfo["/Producer"] = "OCRmyPDF"
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    xmp["xmp:CreatorTool"] = "OCRmyPDF"
+                    xmp["pdf:Producer"] = "OCRmyPDF"
+                pdf.save(ocr)
+
+            tagger.tag_pdf(ocr, output, Path(folder) / "report.json", reported_input=source)
+            with pikepdf.open(output) as pdf:
+                self.assertEqual(str(pdf.docinfo["/Creator"]), "eCopy, Inc")
+                self.assertEqual(str(pdf.docinfo["/Producer"]), original_producer + "; PDF Magic Enhancer")
+                self.assertEqual(str(pdf.docinfo["/Author"]), "Dechert LLP")
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    self.assertEqual(xmp["xmp:CreatorTool"], "eCopy, Inc")
+                    self.assertEqual(xmp["pdf:Producer"], original_producer + "; PDF Magic Enhancer")
+
+    def test_distinct_info_and_xmp_provenance_and_reenhancement(self):
+        """Preserve original Info/XMP disagreements and never double-append."""
+        with tempfile.TemporaryDirectory() as folder:
+            source, first, second = (Path(folder) / name for name in ("source.pdf", "first.pdf", "second.pdf"))
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo["/Creator"] = "Info Creator"
+                pdf.docinfo["/Producer"] = "Info Producer"
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    xmp["xmp:CreatorTool"] = "XMP Creator"
+                    xmp["pdf:Producer"] = "XMP Producer"
+                pdf.save(source)
+            tagger.tag_pdf(source, first, Path(folder) / "first.json")
+            tagger.tag_pdf(first, second, Path(folder) / "second.json")
+            for path in (first, second):
+                with pikepdf.open(path) as pdf:
+                    self.assertEqual(str(pdf.docinfo["/Creator"]), "Info Creator")
+                    self.assertEqual(str(pdf.docinfo["/Producer"]), "Info Producer; PDF Magic Enhancer")
+                    with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                        self.assertEqual(xmp["xmp:CreatorTool"], "XMP Creator")
+                        self.assertEqual(xmp["pdf:Producer"], "XMP Producer; PDF Magic Enhancer")
+
+    def test_optional_metadata_and_keyword_tags_preserve_existing_creator(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output = (Path(folder) / name for name in ("source.pdf", "output.pdf"))
             with pikepdf.Pdf.new() as pdf:
                 pdf.add_blank_page()
                 pdf.docinfo["/Author"] = "Real Author"
-                pdf.docinfo["/Creator"] = "Real Author"  # Legacy PDF Magic value
+                pdf.docinfo["/Creator"] = "Real Author"  # Even a legacy creator value is original metadata.
                 pdf.save(source)
             tagger.tag_pdf(source, output, Path(folder) / "report.json", metadata_overrides={
                 "title": "New Title",
@@ -142,14 +195,14 @@ class MetadataTests(unittest.TestCase):
                 "identifier": "978-1-2345",
             })
             with pikepdf.open(output) as pdf:
-                self.assertNotIn("/Creator", pdf.docinfo)
+                self.assertEqual(str(pdf.docinfo["/Creator"]), "Real Author")
                 self.assertEqual(str(pdf.docinfo["/Author"]), "Chosen Author")
                 self.assertEqual(str(pdf.docinfo["/Title"]), "New Title")
                 self.assertEqual(str(pdf.docinfo["/Subject"]), "Reader-facing summary")
                 self.assertEqual(str(pdf.docinfo["/Keywords"]), "Markets, stocks, ETFs")
                 self.assertEqual(str(pdf.Root["/Lang"]), "en-US")
                 with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
-                    self.assertNotIn("xmp:CreatorTool", xmp)
+                    self.assertEqual(xmp["xmp:CreatorTool"], "Real Author")
                     self.assertEqual(xmp["dc:creator"], ["Chosen Author"])
                     self.assertEqual(xmp["dc:subject"], {"Markets", "stocks", "ETFs"})
                     self.assertEqual(xmp["pdf:Keywords"], "Markets, stocks, ETFs")
