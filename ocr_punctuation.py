@@ -31,6 +31,8 @@ def tilde_change_warning(original: str, reviewed: str, decision: dict) -> str | 
     Unchanged mathematical, URL, code, and prose tildes need no evidence.
     Other text edits remain subject to the tagger's existing review rules.
     """
+    if original == reviewed or ("~" not in original and "~" not in reviewed):
+        return None
     candidates = {item["offset"] for item in tilde_candidates(original)}
     corrections = decision.get("tilde_corrections", [])
     approved = set()

@@ -105,6 +105,7 @@ class PunctuationTests(unittest.TestCase):
                                      pikepdf.unparse_content_stream(original))
                 self.assertEqual(source.read_bytes(), original_bytes)
                 output.unlink()
+                report.unlink()
 
 
 if __name__ == "__main__":
