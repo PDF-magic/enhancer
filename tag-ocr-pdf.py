@@ -24,6 +24,7 @@ from pikepdf import Array, Dictionary, Name, Operator, String
 
 from pdf_metadata import apply_metadata, choose_source_url, local_user_name, source_details, visible_creator
 from ocr_punctuation import tilde_change_warning
+from ocr_dates import normalize_ocr_dates
 from reading_order import (
     group_native_runs, reconstruct_reading_order,
     reorder_safe_text_units, order_changes, crosses_column_gutter,
@@ -921,6 +922,7 @@ def tag_pdf(
         "blocks": [],
         "reviewed_blocks": 0,
         "review_warnings": [],
+        "ocr_date_corrections": [],
         "deep_heading_profile": {},
         "physical_reordered_units": 0,
         "layout_reordered_pages": 0,
@@ -1052,6 +1054,15 @@ def tag_pdf(
             for block_number, block in enumerate(blocks, start=1):
                 block_id = f"p{page_number:04d}-b{block_number:04d}"
                 reviewed, warning = apply_review(block, block_id, decisions or {})
+                # Unambiguous month/day/year OCR digit substitutions are
+                # auditable text-layer repairs, not guesses about citations.
+                normalized, date_edits = normalize_ocr_dates(block.text)
+                if date_edits:
+                    block.text = normalized
+                    report["ocr_date_corrections"].extend(
+                        {"id": block_id, "page": page_number, **edit}
+                        for edit in date_edits
+                    )
                 if reviewed:
                     report["reviewed_blocks"] = int(report["reviewed_blocks"]) + 1
                 if warning:
