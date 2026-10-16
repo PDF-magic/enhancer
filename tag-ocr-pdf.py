@@ -718,7 +718,7 @@ def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -
 
 
 def preserved_text_headings(input_path: Path) -> list[dict[str, object]]:
-    """Find centered, isolated printed titles without rewriting existing tags.
+    """Find centered, isolated printed titles without rewriting page content.
 
     pdfminer is supplied by OCRmyPDF. Layout extraction handles PDFs that put
     an entire page inside one BT/ET object, unlike the OCR tagging parser.
@@ -914,7 +914,8 @@ def tag_pdf(
         if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
             # Existing paragraph tags do not imply navigable section bookmarks.
-            # Keep the original structure and content streams untouched.
+            # Retain the existing structure and content streams, promoting only
+            # paragraph elements that exactly match recognized headings.
             with pdf.open_outline() as outline:
                 has_outline = bool(outline.root)
             if pdf.Root.get("/StructTreeRoot") is not None and not has_outline:
