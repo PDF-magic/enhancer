@@ -167,23 +167,20 @@ def metadata_details(pdf):
         )
         info_creator = clean_text(pdf.docinfo.get("/Creator"))
         xmp_tool = _first_text(metadata.get("xmp:CreatorTool"))
+        info_producer = clean_text(pdf.docinfo.get("/Producer"))
+        xmp_producer = _first_text(metadata.get("pdf:Producer"))
         if not author and info_creator and not SOFTWARE.search(info_creator):
             author = person_name(info_creator) or ""
-
-        def authoring_tool(candidate):
-            if not candidate or candidate.casefold() == author.casefold():
-                return ""
-            if person_name(candidate) and not SOFTWARE.search(candidate):
-                return ""
-            return candidate
-
-        tool = authoring_tool(info_creator) or authoring_tool(xmp_tool)
         keywords = metadata.get("dc:subject") or []
         if not keywords:
             keywords = metadata.get("pdf:Keywords") or pdf.docinfo.get("/Keywords") or ""
         return {
             "author": author if author and not SOFTWARE.search(author) else None,
-            "creator_tool": tool,
+            "creator_tool": info_creator or xmp_tool,
+            "info_creator": info_creator,
+            "xmp_creator_tool": xmp_tool,
+            "info_producer": info_producer,
+            "xmp_producer": xmp_producer,
             "title": clean_text(pdf.docinfo.get("/Title")) or _first_text(metadata.get("dc:title")),
             "description": clean_text(pdf.docinfo.get("/Subject")) or _first_text(metadata.get("dc:description")),
             "keywords": _keywords(keywords),
@@ -213,6 +210,16 @@ def choose_source_url(existing, supplied):
     return supplied or existing
 
 
+def enhanced_producer(original):
+    """Add enhancer provenance without losing an existing PDF producer."""
+    producer = clean_text(original)
+    if not producer:
+        return PRODUCER
+    if PRODUCER.casefold() in {part.strip().casefold() for part in producer.split(";")}:
+        return producer
+    return f"{producer}; {PRODUCER}"
+
+
 def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
     """Map PDF Info and XMP without confusing the author with the creator app.
 
@@ -231,18 +238,20 @@ def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
             values[key] = _keywords(value) if key == "keywords" else clean_text(value)
 
     creator_tool = clean_text(original.get("creator_tool"))
-    if creator_tool.casefold() == author.casefold():
-        creator_tool = ""
+    info_creator = clean_text(original.get("info_creator")) or creator_tool
+    xmp_creator_tool = clean_text(original.get("xmp_creator_tool")) or creator_tool
+    info_producer = enhanced_producer(original.get("info_producer") or original.get("xmp_producer"))
+    xmp_producer = enhanced_producer(original.get("xmp_producer") or original.get("info_producer"))
     keywords = _keywords(values.get("keywords") or [])
     pikepdf.models.PdfMetadata.register_xml_namespace(SOURCE_NAMESPACE, "pdfmagic")
     with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as metadata:
         if author:
             metadata["dc:creator"] = [author]
-        if creator_tool:
-            metadata["xmp:CreatorTool"] = creator_tool
+        if xmp_creator_tool:
+            metadata["xmp:CreatorTool"] = xmp_creator_tool
         elif "xmp:CreatorTool" in metadata:
             del metadata["xmp:CreatorTool"]
-        metadata["pdf:Producer"] = PRODUCER
+        metadata["pdf:Producer"] = xmp_producer
         for field, prop in (
             ("title", "dc:title"),
             ("description", "dc:description"),
@@ -263,11 +272,11 @@ def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
 
     if author:
         pdf.docinfo["/Author"] = author
-    if creator_tool:
-        pdf.docinfo["/Creator"] = creator_tool
+    if info_creator:
+        pdf.docinfo["/Creator"] = info_creator
     elif "/Creator" in pdf.docinfo:
         del pdf.docinfo["/Creator"]
-    pdf.docinfo["/Producer"] = PRODUCER
+    pdf.docinfo["/Producer"] = info_producer
     for field, prop in (("title", "/Title"), ("description", "/Subject")):
         if values.get(field):
             pdf.docinfo[prop] = values[field]
