@@ -204,7 +204,7 @@ def review_page(
         }
         for block in blocks
     ]
-    prompt = f"""You are reviewing page {page} of a scanned document.
+    prompt = f"""You are reviewing page {page} of the supplied document.
 
 Return exactly one decision for every supplied block ID, in the same order.
 Classify each block as body, heading1 through heading6, table, or artifact.

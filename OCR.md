@@ -23,6 +23,9 @@ This is the workflow used by the viewer's Enhance button. Force OCR rasterizes
 pages and replaces existing text in the new copy; the source remains unchanged.
 The AI pass reviews all pages with recognized blocks, applies reviewed text and
 tags, and writes a `.review.jsonl` alongside the PDF, text, and tagging report.
+Both viewer enhancement modes use this OCR and AI review workflow, including
+for PDFs with existing text. Previously enhanced copies without AI review are
+not reused from the viewer's enhancement cache.
 
 Optionally add or override descriptive metadata while enhancing:
 
