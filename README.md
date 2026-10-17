@@ -49,10 +49,12 @@ decoded pixels, and optionally incorporate a local Ollama review. See the
 
 Enhanced PDFs record **Author** (`/Author`, `dc:creator`) from recognizable
 signatures or large letterhead names, then existing author metadata, then the
-local user's full name or username. **Creator** (`/Creator`, `xmp:CreatorTool`)
-is the original authoring application when known, never the author's name.
-**Producer** is `PDF Magic Enhancer`. Both document-info and XMP fields are
-updated. Name detection uses the searchable text and is heuristic.
+local user's full name or username. **Creator** (`/Creator`, `xmp:CreatorTool`) retains the original PDF Info and
+XMP values separately, even if they disagree or resemble an author name.
+**Producer** (`/Producer`, `pdf:Producer`) preserves the original value for
+each metadata format and appends `; PDF Magic Enhancer` once; if missing,
+it is `PDF Magic Enhancer`. Name detection uses the searchable text and
+is heuristic.
 
 The OCR and compress-and-tag enhancement workflows accept optional `--title`,
 `--author`, `--description`, `--keywords` (alias `--tags`), `--publisher`,

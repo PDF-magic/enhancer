@@ -14,6 +14,8 @@ import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
+from ocr_punctuation import tilde_candidates
+
 
 DEFAULT_REVIEW_MODEL = "sec-ocr-review:latest"
 DEFAULT_EXTRACT_MODEL = "deepseek-ocr:latest"
@@ -155,6 +157,18 @@ def decision_schema(block_ids: list[str]) -> dict[str, object]:
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         "sensitive_change_evidence": {"type": "string"},
                         "notes": {"type": "string"},
+                        "tilde_corrections": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "offset": {"type": "integer", "minimum": 0},
+                                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "visual_evidence": {"type": "string"},
+                                },
+                                "required": ["offset", "confidence", "visual_evidence"],
+                            },
+                        },
                     },
                     "required": [
                         "id",
@@ -163,6 +177,7 @@ def decision_schema(block_ids: list[str]) -> dict[str, object]:
                         "confidence",
                         "sensitive_change_evidence",
                         "notes",
+                        "tilde_corrections",
                     ],
                 },
             }
@@ -185,6 +200,7 @@ def review_page(
             "text": block["text"],
             "protected_tokens": block["protected_tokens"],
             "position": block["position"],
+            "tilde_candidates": tilde_candidates(str(block["text"])),
         }
         for block in blocks
     ]
@@ -201,6 +217,14 @@ Rules:
   captions, headers, rows, numeric columns, and dot leaders as table.
 - Preserve historical spelling. Correct an obvious OCR error only when visible evidence
   supports the exact replacement.
+- Inspect every tilde_candidates entry against the image: word-internal '~' can be
+  a misrecognized hyphen (for example self~regulatory). Replace it with '-' only
+  when the image clearly shows a hyphen, with block confidence at least 0.98.
+  For each replacement, add a tilde_corrections entry with the supplied original
+  Unicode character offset, confidence at least 0.98, and visual_evidence describing
+  the visible mark. Do not use linguistic plausibility as visual evidence.
+  Preserve legitimate tildes in mathematics, code, URLs, and prose. If blurry or
+  ambiguous, keep '~' and explain in notes. Return [] when no tildes are corrected.
 - Names, corporate names, personal initials, dates, section numbers, page references,
   quantities, dollar amounts, percentages, and table values are protected evidence.
   Never normalize or guess them. If any protected token changes, confidence must be at
