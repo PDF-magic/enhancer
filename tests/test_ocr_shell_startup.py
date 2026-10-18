@@ -48,5 +48,68 @@ class OcrShellStartupTests(unittest.TestCase):
             self.assertNotIn("Unable to find the Python environment", result.stderr)
 
 
+    def test_project_venv_wins_over_python_on_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            script = directory / "ocr-scanned-pdf.sh"
+            script.write_bytes(SCRIPT.read_bytes())
+            (directory / "tag-ocr-pdf.py").write_text("# placeholder\n")
+            venv = directory / ".venv" / "bin"
+            venv.mkdir(parents=True)
+            venv_python = venv / "python"
+            venv_python.write_text(
+                "#!/bin/bash\n"
+                'if [[ "${1:-}" == "-c" ]]; then echo "PROJECT_VENV_SELECTED" >&2; exit 0; fi\n'
+                "exit 83\n"
+            )
+            venv_python.chmod(0o755)
+            commands = directory / "bin"
+            commands.mkdir()
+            for name, code in {
+                "qpdf": "#!/bin/bash\necho 1\n",
+                "ocrmypdf": '#!/bin/bash\necho "REACHED_OCR" >&2\nexit 47\n',
+                "python3": '#!/bin/bash\necho "INCORRECT_SYSTEM_PYTHON" >&2\nexit 0\n',
+            }.items():
+                executable = commands / name
+                executable.write_text(code)
+                executable.chmod(0o755)
+            pdf = directory / "scan.pdf"
+            pdf.write_bytes(b"%PDF-1.7\n")
+            env = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
+            result = subprocess.run(
+                ["/bin/bash", str(script), str(pdf), str(directory / "enhanced.pdf")],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 47, result.stderr)
+            self.assertIn("PROJECT_VENV_SELECTED", result.stderr)
+            self.assertNotIn("INCORRECT_SYSTEM_PYTHON", result.stderr)
+
+    def test_incomplete_project_venv_fails_without_falling_back_to_system_python(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            script = directory / "ocr-scanned-pdf.sh"
+            script.write_bytes(SCRIPT.read_bytes())
+            (directory / "tag-ocr-pdf.py").write_text("# placeholder\n")
+            venv = directory / ".venv" / "bin"
+            venv.mkdir(parents=True)
+            executable = venv / "python"
+            executable.write_text("#!/bin/bash\nexit 1\n")
+            executable.chmod(0o755)
+            commands = directory / "bin"
+            commands.mkdir()
+            for name in ("qpdf", "ocrmypdf", "python3"):
+                shim = commands / name
+                shim.write_text("#!/bin/bash\nexit 0\n")
+                shim.chmod(0o755)
+            pdf = directory / "scan.pdf"
+            pdf.write_bytes(b"%PDF-1.7\n")
+            env = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
+            result = subprocess.run(
+                ["/bin/bash", str(script), str(pdf)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("setup-python-env.sh", result.stderr)
+
 if __name__ == "__main__":
     unittest.main()
