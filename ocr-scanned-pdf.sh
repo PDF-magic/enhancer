@@ -109,18 +109,6 @@ if [[ ! -f "$tagger" ]]; then
     exit 1
 fi
 
-tagger_python=python3
-if ! "$tagger_python" -c 'import pikepdf' >/dev/null 2>&1; then
-    ocrmypdf_shebang=$(head -n 1 "$(command -v ocrmypdf)")
-    tagger_python=${ocrmypdf_shebang#\#!}
-fi
-
-if [[ ! -x "$tagger_python" ]] || \
-    ! "$tagger_python" -c 'import pikepdf' >/dev/null 2>&1; then
-    printf 'Unable to find the Python environment used by OCRmyPDF.\n' >&2
-    exit 1
-fi
-
 for command_name in ocrmypdf qpdf; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'Required command not found: %s\n' "$command_name" >&2
@@ -128,6 +116,34 @@ for command_name in ocrmypdf qpdf; do
         exit 1
     fi
 done
+
+# Prefer the Enhancer's own isolated Python dependencies when installed.
+# Keep the prior interpreter discovery for existing standalone installations.
+venv_python="$script_dir/.venv/bin/python"
+if [[ -e "$venv_python" || -L "$venv_python" ]]; then
+    if [[ ! -x "$venv_python" ]] || ! "$venv_python" -c 'import pikepdf' >/dev/null 2>&1; then
+        printf 'PDF Enhancer virtual environment needs repair: %s\n' "$venv_python" >&2
+        printf 'Run %s/setup-python-env.sh to install its dependencies.\n' "$script_dir" >&2
+        exit 1
+    fi
+    tagger_python=("$venv_python")
+else
+    # With no project venv, support preexisting Python and OCRmyPDF environments.
+    tagger_python=(python3)
+    if ! "${tagger_python[@]}" -c 'import pikepdf' >/dev/null 2>&1; then
+        ocrmypdf_shebang=$(head -n 1 "$(command -v ocrmypdf)")
+        if [[ "$ocrmypdf_shebang" == '#!'* ]]; then
+            read -r -a tagger_python <<< "${ocrmypdf_shebang:2}"
+        else
+            tagger_python=()
+        fi
+    fi
+    if (( ${#tagger_python[@]} == 0 )) || \
+        ! "${tagger_python[@]}" -c 'import pikepdf' >/dev/null 2>&1; then
+        printf 'No Python with pikepdf found; run %s/setup-python-env.sh.\n' "$script_dir" >&2
+        exit 1
+    fi
+fi
 
 input_pages=$(qpdf --warning-exit-0 --show-npages "$input")
 printf 'PDF_MAGIC_PROGRESS ocr %s\n' "$input_pages"
@@ -157,7 +173,7 @@ if "$ai_review"; then
     initial_report="$tagging_dir/initial.tagging.json"
 fi
 
-"$tagger_python" "$tagger" \
+"${tagger_python[@]}" "$tagger" \
     "$output" \
     "$tagged_output" \
     --report "$initial_report" \
@@ -166,11 +182,11 @@ fi
 
 if "$ai_review"; then
     printf 'PDF_MAGIC_PROGRESS review %s\n' "$input_pages"
-    "$tagger_python" "$script_dir/ollama-review-ocr.py" \
+    "${tagger_python[@]}" "$script_dir/ollama-review-ocr.py" \
         "$tagged_output" "$initial_report" "$review_report"
     reviewed_output="$tagging_dir/reviewed.pdf"
     printf 'PDF_MAGIC_PROGRESS finalizing\n'
-    "$tagger_python" "$tagger" \
+    "${tagger_python[@]}" "$tagger" \
         "$output" "$reviewed_output" \
         --review "$review_report" \
         --report "$tagging_report" \
@@ -181,7 +197,7 @@ fi
 
 # OCRmyPDF's sidecar omits skipped pages. Build it from the tagging report so
 # preserved embedded text remains searchable in the exported plain text too.
-"$tagger_python" - "$tagging_report" "$sidecar" <<'PYTEXT'
+"${tagger_python[@]}" - "$tagging_report" "$sidecar" <<'PYTEXT'
 import json
 from pathlib import Path
 import sys

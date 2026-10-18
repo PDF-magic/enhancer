@@ -7,6 +7,10 @@ on:
     paths:
       - "pdf_metadata.py"
       - "tag-ocr-pdf.py"
+      - "ocr-scanned-pdf.sh"
+      - "compress-and-tag-ocr-pdf.sh"
+      - "setup-python-env.sh"
+      - "tests/test_ocr_shell_startup.py"
       - "tests/test_pdf_metadata.py"
       - "tests/test_tag_existing_text.py"
       - ".github/workflows/pdf-regressions.yml"
@@ -21,5 +25,7 @@ jobs:
           python-version: "3.12"
       - name: Install regression dependencies
         run: python -m pip install pikepdf pdfminer.six
+      - name: Run OCR shell startup regression
+        run: bash -n ocr-scanned-pdf.sh && bash -n compress-and-tag-ocr-pdf.sh && bash -n setup-python-env.sh && python -m unittest discover -s tests -p 'test_ocr_shell_startup.py' -v
       - name: Run metadata and tagged PDF tests
         run: python -m unittest discover -s tests -p 'test_pdf_metadata.py' -v && python -m unittest discover -s tests -p 'test_tag_existing_text.py' -v
