@@ -1,6 +1,7 @@
 """Identify a document creator and keep PDF Magic metadata consistent."""
 
 from collections import Counter
+from datetime import date
 import getpass
 import os
 import re
@@ -155,6 +156,31 @@ def _keywords(value):
     return result
 
 
+def extract_keyword_dates(value):
+    """Separate valid labeled document dates from descriptive keyword tokens."""
+    raw = sorted(value) if isinstance(value, set) else (
+        value if isinstance(value, (list, tuple)) else [value]
+    )
+    keywords = []
+    dates = []
+    for entry in raw:
+        for token in re.split(r"[;,\n]", str(entry or "")):
+            token = clean_text(token)
+            match = re.fullmatch(r"Date:\s*(\d{4}-\d{2}-\d{2})", token, re.I)
+            if match:
+                try:
+                    date.fromisoformat(match.group(1))
+                except ValueError:
+                    pass
+                else:
+                    if match.group(1) not in dates:
+                        dates.append(match.group(1))
+                    continue
+            if token:
+                keywords.append(token)
+    return _keywords(keywords), dates
+
+
 def metadata_details(pdf):
     """Read reusable descriptive metadata, excluding derivative-specific IDs/dates."""
     pikepdf.models.PdfMetadata.register_xml_namespace(SOURCE_NAMESPACE, "pdfmagic")
@@ -174,6 +200,29 @@ def metadata_details(pdf):
         keywords = metadata.get("dc:subject") or []
         if not keywords:
             keywords = metadata.get("pdf:Keywords") or pdf.docinfo.get("/Keywords") or ""
+        # Capture dates in every metadata keyword field, even when another
+        # field supplies the preferred descriptive keywords.
+        keyword_dates = []
+        for source in (pdf.docinfo.get("/Keywords"), metadata.get("pdf:Keywords"),
+                       metadata.get("dc:subject")):
+            _, extracted = extract_keyword_dates(source)
+            keyword_dates.extend(item for item in extracted if item not in keyword_dates)
+        existing_dates = metadata.get("dc:date") or []
+        if not isinstance(existing_dates, (list, tuple, set)):
+            existing_dates = [existing_dates]
+        dates = list(dict.fromkeys([
+            *(clean_text(item) for item in existing_dates if clean_text(item)),
+            *keyword_dates,
+        ]))
+        if keyword_dates:
+            # When keyword dates are removed, retain other keywords from all
+            # Info/XMP sources instead of losing a non-preferred source.
+            merged_keywords = []
+            for source in (pdf.docinfo.get("/Keywords"), metadata.get("pdf:Keywords"),
+                           metadata.get("dc:subject")):
+                ordinary, _ = extract_keyword_dates(source)
+                merged_keywords.extend(ordinary)
+            keywords = _keywords(merged_keywords)
         return {
             "author": author if author and not SOFTWARE.search(author) else None,
             "creator_tool": info_creator or xmp_tool,
@@ -183,7 +232,8 @@ def metadata_details(pdf):
             "xmp_producer": xmp_producer,
             "title": clean_text(pdf.docinfo.get("/Title")) or _first_text(metadata.get("dc:title")),
             "description": clean_text(pdf.docinfo.get("/Subject")) or _first_text(metadata.get("dc:description")),
-            "keywords": _keywords(keywords),
+            "keywords": extract_keyword_dates(keywords)[0],
+            "dates": dates,
             "publisher": _first_text(metadata.get("dc:publisher")),
             "rights": _first_text(metadata.get("dc:rights")),
             "language": _first_text(metadata.get("dc:language")) or clean_text(pdf.Root.get("/Lang")),
@@ -242,7 +292,8 @@ def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
     xmp_creator_tool = clean_text(original.get("xmp_creator_tool")) or creator_tool
     info_producer = enhanced_producer(original.get("info_producer") or original.get("xmp_producer"))
     xmp_producer = enhanced_producer(original.get("xmp_producer") or original.get("info_producer"))
-    keywords = _keywords(values.get("keywords") or [])
+    keywords, supplied_dates = extract_keyword_dates(values.get("keywords") or [])
+    dates = list(dict.fromkeys([*(original.get("dates") or []), *supplied_dates]))
     pikepdf.models.PdfMetadata.register_xml_namespace(SOURCE_NAMESPACE, "pdfmagic")
     with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as metadata:
         if author:
@@ -266,6 +317,12 @@ def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
         if keywords:
             metadata["dc:subject"] = set(keywords)
             metadata["pdf:Keywords"] = ", ".join(keywords)
+        elif dates:
+            for prop in ("dc:subject", "pdf:Keywords"):
+                if prop in metadata:
+                    del metadata[prop]
+        if dates:
+            metadata["dc:date"] = dates
         if source_url:
             metadata["pdfmagic:href"] = source_url
             metadata["dc:source"] = source_url
@@ -282,6 +339,8 @@ def apply_metadata(pdf, author, source_url="", original=None, overrides=None):
             pdf.docinfo[prop] = values[field]
     if keywords:
         pdf.docinfo["/Keywords"] = ", ".join(keywords)
+    elif dates and "/Keywords" in pdf.docinfo:
+        del pdf.docinfo["/Keywords"]
     if values.get("language"):
         pdf.Root["/Lang"] = pikepdf.String(values["language"])
     if "/PDFMagicSourceURL" in pdf.docinfo:

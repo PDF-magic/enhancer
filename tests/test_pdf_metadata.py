@@ -21,6 +21,59 @@ def line(text, y, page=1, size=12, x=72):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_labeled_keyword_date_moves_to_document_date(self):
+        with pikepdf.Pdf.new() as pdf:
+            pdf.add_blank_page()
+            pdf.docinfo.Keywords = "transfer agents; Date: 2009-08-04"
+            pdf.docinfo.CreationDate = "D:20090908180705"
+            with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                xmp["pdf:Keywords"] = "Date: 2009-08-04"
+                xmp["dc:subject"] = ["Date: 2009-08-04", "securities"]
+            metadata.apply_metadata(pdf, "Document Author")
+            self.assertEqual(str(pdf.docinfo.Keywords), "transfer agents, securities")
+            self.assertEqual(str(pdf.docinfo.CreationDate), "D:20090908180705")
+            with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                self.assertEqual(xmp["pdf:Keywords"], "transfer agents, securities")
+                self.assertEqual(set(xmp["dc:subject"]), {"transfer agents", "securities"})
+                self.assertEqual(xmp["dc:date"], ["2009-08-04"])
+
+    def test_ordinary_and_invalid_date_keywords_are_preserved(self):
+        for value in ("Date: 2009-02-30", "2009-08-04", "securities, transfer agents"):
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo.Keywords = value
+                metadata.apply_metadata(pdf, "Document Author")
+                self.assertEqual(str(pdf.docinfo.Keywords), value)
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    self.assertNotIn("dc:date", xmp)
+
+    def test_date_normalization_retains_source_metadata_and_previous_dates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.pdf"
+            output = Path(folder) / "output.pdf"
+            with pikepdf.Pdf.new() as pdf:
+                pdf.add_blank_page()
+                pdf.docinfo.Author = "Original Author"
+                pdf.docinfo.Creator = "Original Creator"
+                pdf.docinfo.Producer = "Original Producer"
+                pdf.docinfo.CreationDate = "D:20090908180705"
+                pdf.docinfo.Keywords = "securities; Date: 2009-08-04"
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    xmp["dc:date"] = ["2001-01-01"]
+                    xmp["dc:subject"] = ["existing keyword"]
+                pdf.save(source)
+            tagger.tag_pdf(source, output, Path(folder) / "report.json",
+                           metadata_overrides={"keywords": "Date: 2009-08-04, updated"})
+            with pikepdf.open(output) as pdf:
+                self.assertEqual(str(pdf.docinfo.Creator), "Original Creator")
+                self.assertEqual(str(pdf.docinfo.Producer), "Original Producer; PDF Magic Enhancer")
+                self.assertEqual(str(pdf.docinfo.CreationDate), "D:20090908180705")
+                self.assertEqual(str(pdf.docinfo.Keywords), "updated")
+                with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as xmp:
+                    self.assertEqual(xmp["dc:date"], ["2001-01-01", "2009-08-04"])
+                    self.assertEqual(set(xmp["dc:subject"]), {"updated"})
+                    self.assertEqual(xmp["pdf:Keywords"], "updated")
+
     def test_signature_beats_recipient_and_letterhead(self):
         records = [line("Dr. Recipient Name", 700, size=28), line("Dear Dr. Recipient Name:", 600),
                    line("Body paragraph here.", 550), line("Respectfully submitted,", 200),
@@ -208,7 +261,7 @@ class MetadataTests(unittest.TestCase):
                     self.assertEqual(xmp["pdf:Keywords"], "Markets, stocks, ETFs")
                     self.assertEqual(xmp["dc:publisher"], {"Example Publisher"})
                     self.assertEqual(xmp["dc:rights"], "CC BY-SA 4.0")
-                    self.assertEqual(xmp["dc:language"], ["en-US"])
+                    self.assertEqual(set(xmp["dc:language"]), {"en-US"})
                     self.assertEqual(xmp["dc:identifier"], "978-1-2345")
 
     def test_original_author_metadata_survives_ocr_creator_overwrite(self):

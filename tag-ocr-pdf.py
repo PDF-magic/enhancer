@@ -884,6 +884,134 @@ def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -
     return count
 
 
+def preserved_text_headings(input_path: Path) -> list[dict[str, object]]:
+    """Find centered, isolated printed titles without rewriting page content.
+
+    pdfminer is supplied by OCRmyPDF. Layout extraction handles PDFs that put
+    an entire page inside one BT/ET object, unlike the OCR tagging parser.
+    """
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTChar, LTTextLine
+
+    headings = []
+    for page_number, page in enumerate(extract_pages(input_path), start=1):
+        lines = []
+
+        def collect(item):
+            if isinstance(item, LTTextLine):
+                lines.append(item)
+            elif hasattr(item, "__iter__"):
+                for child in item:
+                    collect(child)
+
+        collect(page)
+        body_lines = [line for line in lines if line.width > page.width * .65]
+        if not body_lines:
+            continue
+        body_left = statistics.median(line.x0 for line in body_lines)
+        body_right = statistics.median(line.x1 for line in body_lines)
+        candidates = []
+        for line in lines:
+            text = re.sub(r"\s+", " ", line.get_text()).strip()
+            words = [word for word in text.split() if word[0].isalpha()]
+            chars = [char for char in line if isinstance(char, LTChar)]
+            if (not words or not chars or not 4 <= len(text) <= 180
+                or len(words) > 18 or WORD_END.search(text)
+                or text.endswith((",", ";", ":"))
+                or not page.height * .15 < line.y0 < page.height * .90
+                or abs((line.x0 + line.x1) / 2 - page.width / 2) > page.width * .025
+                or line.x0 < body_left + 8 or line.x1 > body_right - 8
+                or sum(word[0].isupper() for word in words) / len(words) < .55):
+                continue
+            # Reject fragments sharing a row with prose or another column.
+            if any(other is not line and min(line.y1, other.y1) > max(line.y0, other.y0)
+                   for other in lines):
+                continue
+            letters = [char for char in chars if char.get_text().isalpha()]
+            italic = sum(any(style in char.fontname.lower() for style in ("italic", "oblique"))
+                         for char in letters) > len(letters) / 2
+            candidates.append((line, text, "H3" if italic else "H2"))
+        candidates.sort(key=lambda item: -item[0].y1)
+        previous = None
+        for line, text, level in candidates:
+            if (previous is not None and headings[-1]["level"] == level
+                and 0 <= previous.y0 - line.y1 <= line.height * .6):
+                headings[-1]["text"] += " " + text
+            else:
+                headings.append({"level": level, "text": text, "page": page_number})
+            previous = line
+    return headings
+
+
+def promote_preserved_headings(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -> int:
+    """Promote exact matching paragraph elements; retain MCIDs and inline styles."""
+    def key(text):
+        return re.sub(r"\s+", "", text)
+
+    promoted = 0
+    for page_number in sorted({heading["page"] for heading in headings}):
+        page = pdf.pages[page_number - 1]
+        fonts = page.obj.get("/Resources", Dictionary()).get("/Font", Dictionary())
+        mappings = {}
+        for name, font in fonts.items():
+            if font.get("/ToUnicode") is not None:
+                mappings[str(name)] = unicode_map(font)
+            elif font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding"):
+                mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace")
+                                       for code in range(256)}
+        text_by_mcid = {}
+        stack = []
+        font_name = None
+        for instruction in pikepdf.parse_content_stream(page):
+            op, args = str(instruction.operator), instruction.operands
+            if op == "Tf":
+                font_name = str(args[0])
+            elif op in {"BDC", "BMC"}:
+                properties = args[1] if op == "BDC" else None
+                stack.append(int(properties.MCID) if isinstance(properties, Dictionary)
+                             and "/MCID" in properties else None)
+            elif op == "EMC":
+                if stack:
+                    stack.pop()
+            elif op in {"Tj", "TJ", "'", '"'} and stack and stack[-1] is not None:
+                mapping = mappings.get(font_name)
+                if mapping:
+                    operands = args if op in {"Tj", "TJ"} else [args[-1]]
+                    text_by_mcid.setdefault(stack[-1], [])
+                    text_by_mcid[stack[-1]].append(decode_show_text(operands, mapping))
+        wanted = {key(heading["text"]): heading["level"] for heading in headings
+                  if heading["page"] == page_number}
+
+        def element_text(item):
+            if isinstance(item, int):
+                return "".join(text_by_mcid.get(item, []))
+            if isinstance(item, Array):
+                return "".join(element_text(child) for child in item)
+            if isinstance(item, Dictionary):
+                if "/MCID" in item:
+                    return "".join(text_by_mcid.get(int(item.MCID), []))
+                return element_text(item.get("/K"))
+            return ""
+
+        def visit(item, inherited_page=None):
+            nonlocal promoted
+            if isinstance(item, Array):
+                for child in item:
+                    visit(child, inherited_page)
+            elif isinstance(item, Dictionary):
+                owner = item.get("/Pg", inherited_page)
+                if (owner is not None and owner.objgen == page.obj.objgen
+                    and item.get("/S") == Name("/P")):
+                    level = wanted.get(key(element_text(item.get("/K"))))
+                    if level:
+                        item["/S"] = Name("/" + level)
+                        promoted += 1
+                visit(item.get("/K"), owner)
+
+        visit(pdf.Root.StructTreeRoot.get("/K"))
+    return promoted
+
+
 def tag_pdf(
     input_path: Path,
     output_path: Path,
@@ -979,6 +1107,11 @@ def tag_pdf(
         report["href"] = reference_url or None
         if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
+            if (not retag_existing and pdf.Root.get("/StructTreeRoot") is not None
+                    and not existing_outline):
+                report["headings"] = preserved_text_headings(input_path)
+                report["outline_entries"] = write_heading_outline(pdf, report["headings"])
+                report["promoted_heading_tags"] = promote_preserved_headings(pdf, report["headings"])
             if not retag_existing or metadata_overrides:
                 apply_metadata(pdf, creator, reference_url, original=original, overrides=metadata_overrides)
             pdf.save(output_path, fix_metadata_version=not retag_existing)
