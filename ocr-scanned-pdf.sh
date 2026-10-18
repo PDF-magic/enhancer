@@ -163,7 +163,7 @@ if "$ai_review"; then
     initial_report="$tagging_dir/initial.tagging.json"
 fi
 
-"$tagger_python" "$tagger" \
+"${tagger_python[@]}" "$tagger" \
     "$output" \
     "$tagged_output" \
     --report "$initial_report" \
@@ -172,11 +172,11 @@ fi
 
 if "$ai_review"; then
     printf 'PDF_MAGIC_PROGRESS review %s\n' "$input_pages"
-    "$tagger_python" "$script_dir/ollama-review-ocr.py" \
+    "${tagger_python[@]}" "$script_dir/ollama-review-ocr.py" \
         "$tagged_output" "$initial_report" "$review_report"
     reviewed_output="$tagging_dir/reviewed.pdf"
     printf 'PDF_MAGIC_PROGRESS finalizing\n'
-    "$tagger_python" "$tagger" \
+    "${tagger_python[@]}" "$tagger" \
         "$output" "$reviewed_output" \
         --review "$review_report" \
         --report "$tagging_report" \
@@ -187,7 +187,7 @@ fi
 
 # OCRmyPDF's sidecar omits skipped pages. Build it from the tagging report so
 # preserved embedded text remains searchable in the exported plain text too.
-"$tagger_python" - "$tagging_report" "$sidecar" <<'PYTEXT'
+"${tagger_python[@]}" - "$tagging_report" "$sidecar" <<'PYTEXT'
 import json
 from pathlib import Path
 import sys
