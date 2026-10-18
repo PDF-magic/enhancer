@@ -20,22 +20,22 @@ class OcrShellStartupTests(unittest.TestCase):
             commands = directory / "bin"
             commands.mkdir()
             pdf = directory / "source.pdf"
-            pdf.write_bytes(b"%PDF-1.7\\n")
+            pdf.write_bytes(b"%PDF-1.7\n")
             python3 = commands / "python3"
             python3.write_text(
-                "#!/bin/bash\\n"
-                'if [[ "${1:-}" == "-c" && "${2:-}" == "import pikepdf" ]]; then exit 0; fi\\n'
-                f'exec {shlex.quote(sys.executable)} "$@"\\n'
+                "#!/bin/bash\n"
+                'if [[ "${1:-}" == "-c" && "${2:-}" == "import pikepdf" ]]; then exit 0; fi\n'
+                f'exec {shlex.quote(sys.executable)} "$@"\n'
             )
             python3.chmod(0o755)
             qpdf = commands / "qpdf"
-            qpdf.write_text("#!/bin/bash\\necho 1\\n")
+            qpdf.write_text("#!/bin/bash\necho 1\n")
             qpdf.chmod(0o755)
             ocrmypdf = commands / "ocrmypdf"
             ocrmypdf.write_text(
-                "#!/bin/bash\\n"
-                'echo "REACHED_OCR_COMMAND" >&2\\n'
-                "exit 47\\n"
+                "#!/bin/bash\n"
+                'echo "REACHED_OCR_COMMAND" >&2\n'
+                "exit 47\n"
             )
             ocrmypdf.chmod(0o755)
             environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
