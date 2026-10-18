@@ -261,7 +261,7 @@ class MetadataTests(unittest.TestCase):
                     self.assertEqual(xmp["pdf:Keywords"], "Markets, stocks, ETFs")
                     self.assertEqual(xmp["dc:publisher"], {"Example Publisher"})
                     self.assertEqual(xmp["dc:rights"], "CC BY-SA 4.0")
-                    self.assertEqual(xmp["dc:language"], ["en-US"])
+                    self.assertEqual(set(xmp["dc:language"]), {"en-US"})
                     self.assertEqual(xmp["dc:identifier"], "978-1-2345")
 
     def test_original_author_metadata_survives_ocr_creator_overwrite(self):
