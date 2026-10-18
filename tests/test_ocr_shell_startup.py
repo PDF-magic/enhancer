@@ -59,7 +59,7 @@ class OcrShellStartupTests(unittest.TestCase):
             venv_python = venv / "python"
             venv_python.write_text(
                 "#!/bin/bash\n"
-                'if [[ "${1:-}" == "-c" ]]; then echo "PROJECT_VENV_SELECTED" >&2; exit 0; fi\n'
+                'if [[ "${1:-}" == "-c" ]]; then touch "$PDF_MAGIC_TEST_VENV_MARKER"; exit 0; fi\n'
                 "exit 83\n"
             )
             venv_python.chmod(0o755)
@@ -68,21 +68,25 @@ class OcrShellStartupTests(unittest.TestCase):
             for name, code in {
                 "qpdf": "#!/bin/bash\necho 1\n",
                 "ocrmypdf": '#!/bin/bash\necho "REACHED_OCR" >&2\nexit 47\n',
-                "python3": '#!/bin/bash\necho "INCORRECT_SYSTEM_PYTHON" >&2\nexit 0\n',
+                "python3": '#!/bin/bash\ntouch "$PDF_MAGIC_TEST_SYSTEM_MARKER"\nexit 0\n',
             }.items():
                 executable = commands / name
                 executable.write_text(code)
                 executable.chmod(0o755)
             pdf = directory / "scan.pdf"
             pdf.write_bytes(b"%PDF-1.7\n")
-            env = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
+            env = {
+                **os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+                "PDF_MAGIC_TEST_VENV_MARKER": str(directory / "venv-selected"),
+                "PDF_MAGIC_TEST_SYSTEM_MARKER": str(directory / "system-selected"),
+            }
             result = subprocess.run(
                 ["/bin/bash", str(script), str(pdf), str(directory / "enhanced.pdf")],
                 env=env, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 47, result.stderr)
-            self.assertIn("PROJECT_VENV_SELECTED", result.stderr)
-            self.assertNotIn("INCORRECT_SYSTEM_PYTHON", result.stderr)
+            self.assertTrue((directory / "venv-selected").exists())
+            self.assertFalse((directory / "system-selected").exists())
 
     def test_incomplete_project_venv_fails_without_falling_back_to_system_python(self):
         with tempfile.TemporaryDirectory() as folder:
