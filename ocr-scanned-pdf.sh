@@ -109,18 +109,6 @@ if [[ ! -f "$tagger" ]]; then
     exit 1
 fi
 
-tagger_python=python3
-if ! "$tagger_python" -c 'import pikepdf' >/dev/null 2>&1; then
-    ocrmypdf_shebang=$(head -n 1 "$(command -v ocrmypdf)")
-    tagger_python=${ocrmypdf_shebang#\#!}
-fi
-
-if [[ ! -x "$tagger_python" ]] || \
-    ! "$tagger_python" -c 'import pikepdf' >/dev/null 2>&1; then
-    printf 'Unable to find the Python environment used by OCRmyPDF.\n' >&2
-    exit 1
-fi
-
 for command_name in ocrmypdf qpdf; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'Required command not found: %s\n' "$command_name" >&2
@@ -128,6 +116,24 @@ for command_name in ocrmypdf qpdf; do
         exit 1
     fi
 done
+
+# Check the interpreter as a command, not as a relative path named "python3".
+# Homebrew commonly installs pikepdf in OCRmyPDF's private Python environment.
+tagger_python=(python3)
+if ! "${tagger_python[@]}" -c 'import pikepdf' >/dev/null 2>&1; then
+    ocrmypdf_shebang=$(head -n 1 "$(command -v ocrmypdf)")
+    if [[ "$ocrmypdf_shebang" == '#!'* ]]; then
+        read -r -a tagger_python <<< "${ocrmypdf_shebang:2}"
+    else
+        tagger_python=()
+    fi
+fi
+
+if (( ${#tagger_python[@]} == 0 )) || \
+    ! "${tagger_python[@]}" -c 'import pikepdf' >/dev/null 2>&1; then
+    printf 'Unable to find the Python environment used by OCRmyPDF.\n' >&2
+    exit 1
+fi
 
 input_pages=$(qpdf --warning-exit-0 --show-npages "$input")
 printf 'PDF_MAGIC_PROGRESS ocr %s\n' "$input_pages"
