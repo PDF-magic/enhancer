@@ -47,10 +47,23 @@ apply PDF structure tags, recompress compatible image streams without changing
 decoded pixels, and optionally incorporate a local Ollama review. See the
 [OCR workflow](OCR.md) for requirements and commands.
 
-Enhanced PDFs record Creator and Author from recognizable signatures or large
-letterhead names, then existing author metadata, then the local user's full name
-or username. Producer is `PDF Magic Enhancer`. Both document-info and XMP fields
-are updated. Name detection uses the searchable text and is heuristic.
+Enhanced PDFs record **Author** (`/Author`, `dc:creator`) from recognizable
+signatures or large letterhead names, then existing author metadata, then the
+local user's full name or username. **Creator** (`/Creator`, `xmp:CreatorTool`) retains the original PDF Info and
+XMP values separately, even if they disagree or resemble an author name.
+**Producer** (`/Producer`, `pdf:Producer`) preserves the original value for
+each metadata format and appends `; PDF Magic Enhancer` once; if missing,
+it is `PDF Magic Enhancer`. Name detection uses the searchable text and
+is heuristic.
+
+The OCR and compress-and-tag enhancement workflows accept optional `--title`,
+`--author`, `--description`, `--keywords` (alias `--tags`), `--publisher`,
+`--rights`, `--language`, and `--identifier` values. Unspecified descriptive
+fields retain source metadata rather than being invented. PDF Info Title,
+Subject, and Keywords map to XMP `dc:title`, `dc:description`, and
+`dc:subject`/`pdf:Keywords`, respectively. Publisher, rights, language, and
+identifier are mapped into Dublin Core XMP, and language also sets PDF `/Lang`.
+The web toolbench offers editable metadata fields.
 
 Pass `--source-url URL` to `ocr-scanned-pdf.sh` to store the original document
 URL in the XMP `pdfmagic:href` property. Existing original URLs are retained

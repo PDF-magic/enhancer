@@ -23,6 +23,8 @@ export const compression = {
     { name: "output", label: "Output PDF", required: true, placeholder: "scan-compact.pdf" },
     { name: "review", label: "AI review JSONL", placeholder: "review-v1.jsonl", help: "Used by the compress-and-tag workflow." },
     { name: "report", label: "Compression report", placeholder: "compression.json", help: "Used by compression-only mode." },
+    { name: "description", label: "Description", placeholder: "Optional; for tagged PDF" },
+    { name: "keywords", label: "Tags / keywords", placeholder: "Comma-separated; for tagged PDF" },
   ],
   build(values) {
     const input = shellQuote(requireValue(values, "input", "Input PDF"));
@@ -32,6 +34,9 @@ export const compression = {
       optionalFlag(parts, "--report", values.report);
       return command(parts);
     }
-    return command(["./compress-and-tag-ocr-pdf.sh", input, output, shellQuote(values.review)]);
+    const parts = ["./compress-and-tag-ocr-pdf.sh", input, output, shellQuote(values.review)];
+    optionalFlag(parts, "--description", values.description);
+    optionalFlag(parts, "--tags", values.keywords);
+    return command(parts);
   },
 };

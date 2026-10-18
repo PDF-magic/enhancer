@@ -23,6 +23,26 @@ This is the workflow used by the viewer's Enhance button. Force OCR rasterizes
 pages and replaces existing text in the new copy; the source remains unchanged.
 The AI pass reviews all pages with recognized blocks, applies reviewed text and
 tags, and writes a `.review.jsonl` alongside the PDF, text, and tagging report.
+Both viewer enhancement modes use this OCR and AI review workflow, including
+for PDFs with existing text. Previously enhanced copies without AI review are
+not reused from the viewer's enhancement cache.
+
+Optionally add or override descriptive metadata while enhancing:
+
+```sh
+./ocr-scanned-pdf.sh SOURCE.pdf NEW-OCR.pdf \
+  --title "Example Title" \
+  --description "A summary of the document" \
+  --tags "finance, investing" \
+  --language en-US
+```
+
+The original authoring application is preserved as Creator where available;
+the person or organization belongs in Author and `dc:creator`. Descriptions
+map to PDF Subject and `dc:description`; tags to PDF Keywords,
+`pdf:Keywords`, and Dublin Core `dc:subject`. Other optional fields include
+`--author`, `--publisher`, `--rights`, and `--identifier`. Missing descriptive
+values are not guessed. The compress-and-tag workflow accepts these options too.
 
 The command refuses to overwrite files. It writes a searchable PDF, a text
 sidecar, and a JSON report containing every classified block. Body paragraphs
@@ -36,6 +56,18 @@ so the viewer can show its section navigator for the enhanced copy. The final
 bookmarks use the AI-reviewed heading text and levels when AI review is enabled.
 
 ## Create a much smaller derivative
+
+To rebuild paragraph copy text in an already tagged PDF, use:
+
+```sh
+python3 tag-ocr-pdf.py TAGGED.pdf RETAGGED.pdf --retag
+```
+
+This replaces text structure tags and paragraph `/ActualText`, preserves existing
+bookmarks and metadata, and leaves drawing instructions intact. Decorative
+vector Form objects are skipped when selecting a text layer. Native font runs
+are joined before paragraph detection, preserving printed hard hyphens.
+Clipboard behavior still depends on the PDF viewer honoring `/ActualText`.
 
 Create a new losslessly optimized derivative, then apply the same structure
 tags:
@@ -90,3 +122,23 @@ The AI prompt treats names, initials, corporate names, dates, references,
 quantities, currency, percentages, and table values as protected evidence. A
 changed protected token is rejected unless the review supplies image-specific
 evidence at confidence 0.98 or higher. The scan remains authoritative.
+
+Date-shaped OCR errors are also corrected during tagging: an `I`, `l`, or
+`|` in the day of an explicit written month/day/four-digit-year date (for
+example `Dec. I, 1994`) is converted to `1` only if the resulting date is
+calendar-valid. Standalone Roman numerals, dates without a numeric year, and
+other numbers are not changed. Every substitution is recorded with its block
+and page in `ocr_date_corrections` in the tagging report. Corrections appear
+in the exported text and the derivative PDF's paragraph `/ActualText`;
+scanned page images and source files are untouched. Because this narrow
+normalization relies on syntax, readers should still check consequential dates
+against the scan. No attempt is made to verify or alter release numbers.
+
+Word-internal tildes such as `self~regulatory` are flagged for image review.
+A tilde becomes a hyphen only with per-character visual evidence and both
+character and block confidence of at least 0.98. Ambiguous marks and legitimate
+tildes are retained; there is no global substitution. Rejected changes appear
+in the tagging report's `review_warnings`. Older saved reviews that change a
+tilde need to be regenerated to supply this evidence. Accepted corrections are
+written to the derivative's paragraph `/ActualText`; page drawing instructions
+and the source PDF remain unchanged.

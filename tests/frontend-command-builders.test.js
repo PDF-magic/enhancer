@@ -24,6 +24,13 @@ test("OCR preserves paths with spaces", () => {
   );
 });
 
+test("OCR forwards optional descriptive metadata and tags", () => {
+  assert.equal(
+    ocr.build({ input: "scan.pdf", title: "Nine to Noon", description: "An investing guide", keywords: "stocks, ETFs" }),
+    "./ocr-scanned-pdf.sh scan.pdf --title 'Nine to Noon' --description 'An investing guide' --keywords 'stocks, ETFs'",
+  );
+});
+
 test("AI review exposes resumable page selection", () => {
   assert.equal(
     aiReview.build({
@@ -46,5 +53,9 @@ test("Compression modes remain independent", () => {
   assert.equal(
     compression.build({ mode: "tagged", input: "in.pdf", output: "out.pdf", review: "review.jsonl" }),
     "./compress-and-tag-ocr-pdf.sh in.pdf out.pdf review.jsonl",
+  );
+  assert.equal(
+    compression.build({ mode: "tagged", input: "in.pdf", output: "out.pdf", description: "Summary", keywords: "finance, books" }),
+    "./compress-and-tag-ocr-pdf.sh in.pdf out.pdf --description Summary --tags 'finance, books'",
   );
 });

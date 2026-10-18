@@ -23,6 +23,12 @@ import pikepdf
 from pikepdf import Array, Dictionary, Name, Operator, String
 
 from pdf_metadata import apply_metadata, choose_source_url, local_user_name, source_details, visible_creator
+from ocr_punctuation import tilde_change_warning
+from ocr_dates import normalize_ocr_dates
+from reading_order import (
+    group_native_runs, reconstruct_reading_order,
+    reorder_safe_text_units, order_changes, crosses_column_gutter,
+)
 
 
 MAJOR_HEADING = re.compile(
@@ -63,7 +69,11 @@ class OcrLine:
     artifact: bool = False
     table: bool = False
     heading: str | None = None
+    raw_text: str | None = None
+    right: float | None = None
     bold: bool = False
+    italic: bool = False
+    native: bool = False
 
 
 @dataclass
@@ -93,6 +103,10 @@ def parse_args() -> argparse.Namespace:
         help="optional Ollama JSON/JSONL decisions produced by ollama-review-ocr.py",
     )
     parser.add_argument("--source-url", default="", help="original document URL to retain as pdfmagic:href")
+    for field in ("title", "author", "description", "keywords", "publisher", "rights", "language", "identifier"):
+        parser.add_argument(f"--{field}", default="", help=f"override or add document {field} metadata")
+    parser.add_argument("--tags", dest="keywords", help="comma-separated keyword tags (alias for --keywords)")
+    parser.add_argument("--retag", action="store_true", help="rebuild existing text tags and ActualText; preserve existing bookmarks and metadata")
     parser.add_argument("--reported-input", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--reported-output", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -220,8 +234,29 @@ def extract_lines(
         elif font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding"):
             mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace") for code in range(256)}
     bold_fonts = {str(name) for name, font in fonts.items() if "bold" in str(font.get("/BaseFont", "")).lower()}
+    italic_fonts = {str(name) for name, font in fonts.items()
+                    if any(style in str(font.get("/BaseFont", "")).lower()
+                           for style in ("italic", "oblique"))}
     if not mappings:
         raise ValueError("OCR Form XObject has no fonts")
+
+    def advance(font_name, operands, size):
+        font = fonts[font_name]
+        widths = font.get("/Widths")
+        first = int(font.get("/FirstChar", 0))
+        value = operands[0]
+        items = value if isinstance(value, Array) else [value]
+        result = 0.0
+        for item in items:
+            if isinstance(item, String):
+                if widths is not None:
+                    result += sum(float(widths[c-first]) if first <= c < first+len(widths) else 0
+                                  for c in bytes(item)) * size / 1000
+                else:
+                    result += len(decode_pdf_string(item, mappings[font_name])) * size * .5
+            else:
+                result -= float(item) * size / 1000
+        return result
 
     identity = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     ctm = identity
@@ -248,8 +283,13 @@ def extract_lines(
                 "y": 0.0,
                 "size": 0.0,
                 "positioned": False,
+                "advance": 0.0,
+                "break": False,
             }
         elif current is not None and operator in {"Td", "Tm"}:
+            if current["text"] and ((operator == "Td" and float(operands[1]) != 0)
+                                   or operator == "Tm"):
+                current["break"] = True
             if not current["positioned"]:
                 if operator == "Td":
                     local_x, local_y = float(operands[0]), float(operands[1])
@@ -260,11 +300,25 @@ def extract_lines(
         elif current is not None and operator == "Tf":
             current_font = str(operands[0])
             current["size"] = float(operands[1])
-        elif current is not None and operator in {"Tj", "TJ"}:
+        elif current is not None and operator in {"T*", "TD"}:
+            current["break"] = True
+        elif current is not None and operator in {"Tj", "TJ", "'", '"'}:
             mapping = mappings.get(current_font)
             if mapping is None:
                 raise ValueError(f"missing Unicode map for {current_font}")
-            current["text"].append(decode_show_text(operands, mapping))
+            text_operands = operands if operator == "TJ" else [operands[-1]]
+            if operator in {"'", '"'}:
+                current["break"] = True
+            decoded = decode_show_text(text_operands, mapping)
+            if current["break"] and current["text"] and decoded:
+                previous = "".join(current["text"])
+                tail = previous.split()[-1] if previous.split() else ""
+                url_continuation = re.search(r"(?:https?://|www\.|[\w.-]+\.[a-z]+/)", tail) and re.match(r"^[a-z0-9/?%._-]", decoded)
+                if not url_continuation and not previous.endswith(" ") and not decoded.startswith(" "):
+                    current["text"].append(" ")
+            current["break"] = False
+            current["text"].append(decoded)
+            current["advance"] += advance(current_font, text_operands, float(current["size"]))
         elif operator == "ET" and current is not None:
             text = "".join(current["text"]).strip()
             if text:
@@ -277,10 +331,37 @@ def extract_lines(
                         y=float(current["y"]),
                         size=float(current["size"]),
                         bold=current_font in bold_fonts,
+                        italic=current_font in italic_fonts,
+                        raw_text="".join(current["text"]),
+                        right=float(current["x"]) + float(current["advance"]),
                     )
                 )
             current = None
     return lines
+
+
+def merge_native_fragments(lines: list[OcrLine]) -> list[OcrLine]:
+    """Reassemble physical lines before treating font/style runs as paragraphs."""
+    merged: list[OcrLine] = []
+    for line in lines:
+        if merged:
+            previous = merged[-1]
+            gap = line.x - (previous.right if previous.right is not None else previous.x)
+            if abs(previous.y-line.y) < .25 and line.x >= previous.x and gap < min(20., max(previous.size, line.size)*1.6):
+                left = previous.raw_text if previous.raw_text is not None else previous.text
+                right = line.raw_text if line.raw_text is not None else line.text
+                separator = " " if (not left.endswith(" ") and not right.startswith(" ")
+                                    and (gap > max(previous.size, line.size)*.15
+                                         or (previous.bold and line.bold and re.fullmatch(r"[IVXLCDM]+\.", previous.text)))) else ""
+                previous.raw_text = left + separator + right
+                previous.text = previous.raw_text.strip()
+                previous.end = line.end
+                previous.right = line.right
+                previous.bold = previous.bold and line.bold
+                previous.italic = previous.italic and line.italic
+                continue
+        merged.append(line)
+    return merged
 
 
 def letter_stats(text: str) -> tuple[int, float]:
@@ -400,7 +481,7 @@ def join_lines(lines: Iterable[OcrLine]) -> str:
         if not output:
             output = text
         elif output.endswith("-") and text and text[0].islower():
-            output = output[:-1] + text
+            output = (output if line.native else output[:-1]) + text
         else:
             output += " " + text
     return output
@@ -452,6 +533,9 @@ def apply_review(
         and reviewed_text.strip()
         and reviewed_text != block.text
     ):
+        punctuation_warning = tilde_change_warning(block.text, reviewed_text, decision)
+        if punctuation_warning:
+            return True, punctuation_warning
         missing_sensitive = [
             token for token in protected_tokens(block.text) if token not in reviewed_text
         ]
@@ -482,7 +566,7 @@ def starts_new_paragraph(
     return False
 
 
-def build_blocks(lines: list[OcrLine]) -> list[LogicalBlock]:
+def build_blocks(lines: list[OcrLine], page_width: float | None = None) -> list[LogicalBlock]:
     if not lines:
         return []
     gap = typical_line_gap(lines)
@@ -537,6 +621,8 @@ def build_blocks(lines: list[OcrLine]) -> list[LogicalBlock]:
             vertical_gap = previous.y - line.y
             if line.y > previous.y + gap or vertical_gap > gap * 1.30:
                 category_changed = True
+        if page_width is not None and crosses_column_gutter(previous, line, page_width):
+            category_changed = True
         if category_changed or (
             not line.artifact
             and line.heading is None
@@ -614,29 +700,55 @@ def mark_page_images_as_artifacts(pdf: pikepdf.Pdf, page: pikepdf.Page) -> None:
         )
 
 
+def has_extractable_text(target: pikepdf.Object) -> bool:
+    """Distinguish text layers from decorative vector Form XObjects."""
+    fonts = target.get("/Resources", Dictionary()).get("/Font", Dictionary())
+    if not any(font.get("/ToUnicode") is not None or (
+        font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")}
+        and font.get("/Encoding") == Name("/WinAnsiEncoding")
+    ) for font in fonts.values()):
+        return False
+    return any(str(item.operator) in {"Tj", "TJ", "'", '"'}
+               for item in pikepdf.parse_content_stream(target))
+
+
 def find_ocr_form(page: pikepdf.Page) -> pikepdf.Object | None:
     xobjects = page.obj.get("/Resources", Dictionary()).get("/XObject", Dictionary())
     forms = [
         item
         for item in xobjects.values()
-        if item.get("/Subtype") == Name("/Form") and item.get("/Resources")
+        if item.get("/Subtype") == Name("/Form") and has_extractable_text(item)
     ]
     return forms[0] if forms else None
 
 
-def text_target(pdf: pikepdf.Pdf, page: pikepdf.Page) -> pikepdf.Object | None:
+def text_target(pdf: pikepdf.Pdf, page: pikepdf.Page, retag_existing: bool = False) -> pikepdf.Object | None:
     """Use an OCR form, or the page's original text without rasterizing it."""
-    form = find_ocr_form(page)
-    if form is not None:
-        return form
-    if pdf.Root.get("/StructTreeRoot") is not None:
-        return None  # Keep an existing document structure intact.
-    fonts = page.obj.get("/Resources", Dictionary()).get("/Font", Dictionary())
-    if fonts and any(font.get("/ToUnicode") is not None or (
-        font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding")
-    ) for font in fonts.values()):
+    if has_extractable_text(page.obj):
+        if pdf.Root.get("/StructTreeRoot") is not None and not retag_existing:
+            return None  # Keep an existing document structure intact.
         return page.obj
-    return None
+    return find_ocr_form(page)
+
+
+def remove_structure_markers(instructions):
+    """Remove old text tags while preserving optional-content visibility scopes."""
+    retained = []
+    scopes = []
+    for item in instructions:
+        operator = str(item.operator)
+        if operator in {"BDC", "BMC"}:
+            properties = item.operands[1] if operator == "BDC" else None
+            remove = (str(item.operands[0]) == "/Artifact"
+                      or isinstance(properties, Dictionary) and "/MCID" in properties)
+            scopes.append(remove)
+            if remove:
+                continue
+        elif operator == "EMC" and scopes:
+            if scopes.pop():
+                continue
+        retained.append(item)
+    return retained
 
 
 def merge_heading_markers(lines: list[OcrLine]) -> list[OcrLine]:
@@ -686,6 +798,61 @@ def classify_existing_lines(lines: list[OcrLine], heading_sizes: list[float], re
                     elif level == "H6":
                         line.heading = "H" + str(max(int(line.heading[1]), 5))
                     break
+
+
+def merge_chapter_titles(lines: list[OcrLine], heading_sizes: list[float], page_width: float = 612) -> list[OcrLine]:
+    """Join confidently formatted chapter labels and titles, not nearby prose."""
+    named_label = re.compile(
+        r"(?:chapter|chap\.?|part|appendix)\s+(?:\d{1,3}|[ivxlcdm]{1,8}|[a-z]|"
+        r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+        r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+        r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+        r"(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?)",
+        re.I,
+    )
+    bare_label = re.compile(r"(?:\d{1,3}|[ivxlcdm]{1,8})[.)]?", re.I)
+    merged = []
+    index = 0
+    while index < len(lines):
+        label = lines[index]
+        if index + 1 < len(lines) and not label.artifact:
+            named = bool(named_label.fullmatch(label.text.strip()))
+            bare = bool(bare_label.fullmatch(label.text.strip()))
+            if named or bare:
+                title = lines[index + 1]
+                title_text = title.text.strip()
+                words = [w for w in title_text.split() if any(c.isalpha() for c in w)]
+                capitals = sum(w.lstrip('"“‘([—')[:1].isupper() for w in words)
+                title_like = bool(words) and (capitals / len(words) >= .6 or title_text.endswith(('?', '!')))
+                known_size = round(title.size, 2) in heading_sizes
+                larger = title.size >= label.size * 1.18
+                distinct_style = title.bold or title.italic
+                if (
+                    not title.artifact and not title.table
+                    and 1 <= len(title_text.split()) <= 14 and len(title_text) <= 120
+                    and not title_text.endswith('.') and title_like
+                    and 0 < label.y - title.y <= 3 * title.size
+                    and abs(label.x - title.x) <= max(96, page_width * .25)
+                    and title.size >= label.size
+                    and (
+                        (named and (
+                            (larger and (distinct_style or title.size >= label.size * 1.4))
+                            or (label.bold and title.bold and known_size and title.heading is not None)
+                        ))
+                        or (bare and label.bold and title.bold and known_size
+                            and (larger or title.heading is not None))
+                    )
+                ):
+                    label.text = label.text.strip() + " " + title_text
+                    label.end = title.end
+                    label.size = title.size
+                    level = 1 if named else min(6, heading_sizes.index(round(title.size, 2)) + 1)
+                    label.heading = f"H{level}"
+                    label.table = False
+                    index += 1
+        merged.append(label)
+        index += 1
+    return merged
 
 
 def write_heading_outline(pdf: pikepdf.Pdf, headings: list[dict[str, object]]) -> int:
@@ -789,7 +956,7 @@ def promote_preserved_headings(pdf: pikepdf.Pdf, headings: list[dict[str, object
         for name, font in fonts.items():
             if font.get("/ToUnicode") is not None:
                 mappings[str(name)] = unicode_map(font)
-            elif font.get("/Encoding") == Name("/WinAnsiEncoding"):
+            elif font.get("/Subtype") in {Name("/Type1"), Name("/TrueType")} and font.get("/Encoding") == Name("/WinAnsiEncoding"):
                 mappings[str(name)] = {bytes([code]): bytes([code]).decode("cp1252", errors="replace")
                                        for code in range(256)}
         text_by_mcid = {}
@@ -853,6 +1020,8 @@ def tag_pdf(
     reported_input: Path | None = None,
     reported_output: Path | None = None,
     source_url: str = "",
+    retag_existing: bool = False,
+    metadata_overrides: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if input_path.resolve() == output_path.resolve():
         raise ValueError("input and output must be different files")
@@ -881,22 +1050,45 @@ def tag_pdf(
         "blocks": [],
         "reviewed_blocks": 0,
         "review_warnings": [],
+        "ocr_date_corrections": [],
         "deep_heading_profile": {},
+        "physical_reordered_units": 0,
+        "layout_reordered_pages": 0,
     }
 
     original_path = reported_input if reported_input and reported_input.is_file() else input_path
     original = source_details(original_path)
     reference_url = choose_source_url(original["href"], source_url)
+    metadata_overrides = {key: value for key, value in (metadata_overrides or {}).items() if value and value.strip()}
     with pikepdf.open(input_path) as pdf:
         report["pages"] = len(pdf.pages)
-        targets = [text_target(pdf, page) for page in pdf.pages]
+        existing_outline = pdf.Root.get("/Outlines") is not None
+        targets = [text_target(pdf, page, retag_existing) for page in pdf.pages]
         extracted = []
-        for target in targets:
+        for page, target in zip(pdf.pages, targets):
             if target is None:
                 extracted.append(([], []))
                 continue
             instructions = list(pikepdf.parse_content_stream(target))
-            extracted.append((instructions, extract_lines(target, instructions)))
+            if retag_existing:
+                instructions = remove_structure_markers(instructions)
+            lines = extract_lines(target, instructions)
+            if retag_existing and target.get("/Type") == Name("/Page") and lines:
+                page_width = float(page.mediabox[2]) - float(page.mediabox[0])
+                page_height = float(page.mediabox[3]) - float(page.mediabox[1])
+                physical_lines = group_native_runs(lines, page_width)
+                ordered = reconstruct_reading_order(
+                    physical_lines, page_width, page_height
+                )
+                instructions, moved = reorder_safe_text_units(
+                    instructions, lines, ordered
+                )
+                if moved:
+                    report["physical_reordered_units"] += moved
+                    # All source indices change when complete q ... Q drawing
+                    # scopes move. Never reuse the old line index ranges.
+                    lines = extract_lines(target, instructions)
+            extracted.append((instructions, lines))
         name_lines = []
         for page_number, (page, (_, lines)) in enumerate(zip(pdf.pages, extracted), start=1):
             if page_number <= 2 or page_number >= max(1, len(pdf.pages) - 4):
@@ -905,6 +1097,8 @@ def tag_pdf(
                                        "x": line.x, "y": line.y, "size": line.size,
                                        "height": float(page.mediabox[3]) - float(page.mediabox[1])})
         creator, creator_source = visible_creator(name_lines, len(pdf.pages))
+        if metadata_overrides.get("author"):
+            creator, creator_source = metadata_overrides["author"], "explicit metadata"
         if not creator:
             creator = original["author"] or local_user_name()
             creator_source = "document metadata" if original["author"] else "local user"
@@ -913,17 +1107,14 @@ def tag_pdf(
         report["href"] = reference_url or None
         if not any(lines for _, lines in extracted):
             report["preserved_existing_text"] = True
-            # Existing paragraph tags do not imply navigable section bookmarks.
-            # Retain the existing structure and content streams, promoting only
-            # paragraph elements that exactly match recognized headings.
-            with pdf.open_outline() as outline:
-                has_outline = bool(outline.root)
-            if pdf.Root.get("/StructTreeRoot") is not None and not has_outline:
+            if (not retag_existing and pdf.Root.get("/StructTreeRoot") is not None
+                    and not existing_outline):
                 report["headings"] = preserved_text_headings(input_path)
                 report["outline_entries"] = write_heading_outline(pdf, report["headings"])
                 report["promoted_heading_tags"] = promote_preserved_headings(pdf, report["headings"])
-            apply_metadata(pdf, creator, reference_url)
-            pdf.save(output_path)
+            if not retag_existing or metadata_overrides:
+                apply_metadata(pdf, creator, reference_url, original=original, overrides=metadata_overrides)
+            pdf.save(output_path, fix_metadata_version=not retag_existing)
             report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
             return report
         deep_heading_pages = {level: set() for level in ("H3", "H4", "H5", "H6")}
@@ -974,16 +1165,37 @@ def tag_pdf(
                 mark_page_images_as_artifacts(pdf, page)
             bbox = page.mediabox if is_page else form.get("/BBox", Array([0, 0, 1, 1]))
             page_width = float(bbox[2]) - float(bbox[0])
+            page_height = float(bbox[3]) - float(bbox[1])
             if is_page:
+                for line in lines:
+                    line.native = True
+                lines = merge_native_fragments(lines)
                 lines = merge_heading_markers(lines)
             classify_lines(lines, page_width, enabled_deep_headings)
             if is_page:
                 classify_existing_lines(lines, heading_sizes, repeated, page_width, existing_deep)
-            blocks = build_blocks(lines)
+                lines = merge_chapter_titles(lines, heading_sizes, page_width)
+            # Build contiguous content-stream spans first, so a visually
+            # adjacent but physically interleaved column cannot cause an
+            # ActualText tag to swallow unrelated drawing instructions.
+            blocks = build_blocks(lines, page_width)
+            ordered_blocks = reconstruct_reading_order(blocks, page_width, page_height)
+            if order_changes(blocks, ordered_blocks):
+                report["layout_reordered_pages"] += 1
+            blocks = ordered_blocks
 
             for block_number, block in enumerate(blocks, start=1):
                 block_id = f"p{page_number:04d}-b{block_number:04d}"
                 reviewed, warning = apply_review(block, block_id, decisions or {})
+                # Unambiguous month/day/year OCR digit substitutions are
+                # auditable text-layer repairs, not guesses about citations.
+                normalized, date_edits = normalize_ocr_dates(block.text)
+                if date_edits:
+                    block.text = normalized
+                    report["ocr_date_corrections"].extend(
+                        {"id": block_id, "page": page_number, **edit}
+                        for edit in date_edits
+                    )
                 if reviewed:
                     report["reviewed_blocks"] = int(report["reviewed_blocks"]) + 1
                 if warning:
@@ -1054,9 +1266,13 @@ def tag_pdf(
         pdf.Root["/StructTreeRoot"] = structure_root
         pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
         pdf.Root["/Lang"] = String("en-US")
-        report["outline_entries"] = write_heading_outline(pdf, report["headings"])
-        apply_metadata(pdf, creator, reference_url)
-        pdf.save(output_path)
+        if retag_existing and existing_outline:
+            report["preserved_existing_outline"] = True
+        else:
+            report["outline_entries"] = write_heading_outline(pdf, report["headings"])
+        if not retag_existing or metadata_overrides:
+            apply_metadata(pdf, creator, reference_url, original=original, overrides=metadata_overrides)
+        pdf.save(output_path, fix_metadata_version=not retag_existing)
 
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     return report
@@ -1096,6 +1312,8 @@ def main() -> int:
             args.reported_input,
             args.reported_output,
             args.source_url,
+            args.retag,
+            {field: getattr(args, field) for field in ("title", "author", "description", "keywords", "publisher", "rights", "language", "identifier")},
         )
         validate_output(args.output, expected_pages, require_tags=report["tagged_pages"] > 0)
     except Exception as error:

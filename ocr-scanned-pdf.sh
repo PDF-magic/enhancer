@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./ocr-scanned-pdf.sh INPUT.pdf [OUTPUT.pdf] [--skip-text|--force-ocr] [--ai-review] [--source-url URL]
+Usage: ./ocr-scanned-pdf.sh INPUT.pdf [OUTPUT.pdf] [--skip-text|--force-ocr] [--ai-review] [metadata options]
 
 Create a searchable, tagged PDF from an English-language scanned PDF. If
 OUTPUT.pdf is omitted, the output is written beside the input as
@@ -15,6 +15,8 @@ Use --skip-text for mixed documents to preserve pages that already have text.
 Use --force-ocr to replace the text layer on every page, including existing OCR.
 Use --ai-review to apply the local DeepSeek and SEC OCR review models afterward.
 Use --source-url URL to preserve the original document link in PDF metadata.
+Add optional --title, --author, --description, --tags (or --keywords),
+--publisher, --rights, --language, and --identifier values during enhancement.
 
 Install the required tools on macOS with:
   brew install ocrmypdf
@@ -53,7 +55,15 @@ while [[ $# -gt 0 ]]; do
                 printf 'Provide a URL after --source-url.\n' >&2
                 exit 2
             fi
-            metadata_options=(--source-url "$2")
+            metadata_options+=(--source-url "$2")
+            shift
+            ;;
+        --title|--author|--description|--keywords|--tags|--publisher|--rights|--language|--identifier)
+            if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+                printf "Provide a value after %s.\n" "$1" >&2
+                exit 2
+            fi
+            metadata_options+=("$1" "$2")
             shift
             ;;
         *) usage >&2; exit 2 ;;
