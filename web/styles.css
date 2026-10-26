@@ -246,6 +246,45 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
 
 .help { color: var(--muted); font-size: .73rem; line-height: 1.4; }
 
+/* Accessible drag-and-drop targets with the existing light/dark tokens. */
+.file-drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .35rem;
+  min-height: 10rem;
+  padding: 1.25rem .85rem;
+  border: 2px dashed var(--line);
+  border-radius: .9rem;
+  background: var(--field-bg);
+  text-align: center;
+  transition: border-color .15s, background-color .15s;
+}
+.file-drop-zone:hover, .file-drop-zone:focus-within, .file-drop-zone.file-drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.file-drop-zone:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file-drop-zone.file-ready { border-color: var(--green); }
+.file-drop-zone.file-error { border-color: var(--error); }
+.file-drop-zone input[type="file"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.file-drop-symbol { color: var(--accent); font-size: 1.7rem; line-height: 1; }
+.file-drop-instruction { color: var(--ink); font-size: .88rem; font-weight: 750; }
+.file-drop-hint, .file-drop-status { color: var(--muted); font-size: .73rem; line-height: 1.4; }
+.file-drop-status { overflow-wrap: anywhere; font-weight: 650; }
+.file-ready .file-drop-status { color: var(--green); }
+.file-error .file-drop-status { color: var(--error); }
+
+
 .check-field {
   display: flex;
   align-items: center;

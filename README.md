@@ -9,6 +9,19 @@ The dependency-free [web interface](web/index.html) keeps Google Books export,
 OCR, local AI review, and compression in separate reusable modules. Each panel
 validates its own inputs and builds the corresponding local CLI command.
 
+**Choose input files by clicking the drop zone or dragging them into it.**
+Supported inputs include PDF scans, JSON tagging reports, and JSONL AI reviews.
+The localhost Python web server streams an unmodified copy into
+`.pdfmagic-uploads/` and substitutes the staged path into the built command.
+No manual file path is needed for inputs. You can delete this ignored staging
+directory when the imports are no longer needed.
+
+The upload endpoint is bound to `127.0.0.1` and rejects cross-origin requests.
+The selected documents stay on your Mac. A static deployment (for example,
+Netlify) can display the toolbench but cannot provide this local upload
+endpoint. The interface still builds commands for Terminal; it does not
+execute PDF processing or Google Books captures itself.
+
 ```sh
 npm run serve
 ```
@@ -16,9 +29,9 @@ npm run serve
 Open `http://localhost:4173` in a browser. On macOS, **double-click
 [`Launch PDF Magic.command`](Launch%20PDF%20Magic.command)** in Finder to start
 the local server and automatically open the site in your default browser.
-Alternatively, run `npm run open` from the repository root. If PDF Magic
-is already serving port 4173, the launcher opens the existing instance
-rather than starting another. The launcher binds its new server to localhost;
+Alternatively, run `npm run open` from the repository root. If the upload-capable server is already listening on port 4173, the
+launcher opens that instance instead of starting another. If an older static
+server occupies the port, stop it with Control-C before relaunching. The launcher binds its new server to localhost;
 leave its Terminal window open to keep the server running.
 
 The interface follows the system appearance by default. Use the **Dark mode /

@@ -6,6 +6,13 @@ function element(tag, className, text) {
 }
 
 function fieldControl(field) {
+  if (field.type === "file") {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = field.accept;
+    return input;
+  }
+
   if (field.type === "select") {
     const select = document.createElement("select");
     for (const option of field.options) {
@@ -40,7 +47,9 @@ export class ToolPanel extends HTMLElement {
     const data = {};
     for (const field of this._definition.fields) {
       const control = form.elements.namedItem(field.name);
-      data[field.name] = field.type === "checkbox" ? control.checked : control.value;
+      data[field.name] = field.type === "file"
+        ? (control.dataset.uploadedPath || "")
+        : field.type === "checkbox" ? control.checked : control.value;
     }
     return data;
   }
@@ -62,13 +71,104 @@ export class ToolPanel extends HTMLElement {
 
     const form = document.createElement("form");
     const fields = element("div", "fields");
+    let pendingUploads = 0;
     for (const field of definition.fields) {
       const wrapper = element("div", `field${field.wide ? " wide" : ""}`);
       const control = fieldControl(field);
       control.id = `${definition.id}-${field.name}`;
       control.name = field.name;
 
-      if (field.type === "checkbox") {
+      if (field.type === "file") {
+        const label = element("label", "", field.label);
+        label.htmlFor = control.id;
+        if (field.required) label.append(element("span", "required", " *"));
+
+        const zone = element("div", "file-drop-zone");
+        const symbol = element("span", "file-drop-symbol", "⇧");
+        symbol.setAttribute("aria-hidden", "true");
+        const instruction = element("span", "file-drop-instruction",
+          `Drop ${field.accept === ".pdf" ? "a PDF" : field.accept.toUpperCase() + " file"} here or click to choose`);
+        const hint = element("span", "file-drop-hint", "A copy stays on this Mac.");
+        const feedback = element("span", "file-drop-status", "No file selected");
+        feedback.setAttribute("role", "status");
+        feedback.setAttribute("aria-live", "polite");
+        feedback.id = `${control.id}-feedback`;
+        control.setAttribute("aria-describedby", feedback.id);
+        zone.append(symbol, instruction, hint, feedback, control);
+        wrapper.append(label, zone);
+        if (field.help) wrapper.append(element("span", "help", field.help));
+
+        let generation = 0;
+        async function importFile(file) {
+          if (!file) return;
+          const current = ++generation;
+          delete control.dataset.uploadedPath;
+          zone.classList.remove("file-ready", "file-error");
+          if (!file.name.toLowerCase().endsWith(field.accept)) {
+            feedback.textContent = `Select a ${field.accept} file.`;
+            zone.classList.add("file-error");
+            return;
+          }
+
+          pendingUploads += 1;
+          build.disabled = true;
+          zone.classList.add("file-uploading");
+          feedback.textContent = `Importing ${file.name}…`;
+          try {
+            const response = await fetch(
+              `/api/upload?name=${encodeURIComponent(file.name)}`,
+              { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file },
+            );
+            if (!response.ok) {
+              throw new Error([404, 405, 501].includes(response.status)
+                ? "Use the local server (npm run serve or npm run open) to import files."
+                : `Local file import failed (HTTP ${response.status}).`);
+            }
+            const result = await response.json();
+            if (!result.path || typeof result.path !== "string") {
+              throw new Error("The local server did not return a file path.");
+            }
+            if (current !== generation) return;
+            control.dataset.uploadedPath = result.path;
+            zone.classList.add("file-ready");
+            feedback.textContent = `Ready: ${file.name}`;
+          } catch (error) {
+            if (current !== generation) return;
+            zone.classList.add("file-error");
+            feedback.textContent = error.message || "The file could not be imported.";
+          } finally {
+            pendingUploads -= 1;
+            zone.classList.remove("file-uploading");
+            build.disabled = pendingUploads > 0;
+          }
+        }
+
+        control.addEventListener("change", () => importFile(control.files?.[0]));
+        zone.addEventListener("dragenter", (event) => {
+          event.preventDefault();
+          zone.classList.add("file-drag-over");
+        });
+        zone.addEventListener("dragover", (event) => {
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+          zone.classList.add("file-drag-over");
+        });
+        zone.addEventListener("dragleave", (event) => {
+          if (!zone.contains(event.relatedTarget)) zone.classList.remove("file-drag-over");
+        });
+        zone.addEventListener("drop", (event) => {
+          event.preventDefault();
+          zone.classList.remove("file-drag-over");
+          const files = event.dataTransfer?.files;
+          if (!files?.length) return;
+          if (files.length !== 1) {
+            feedback.textContent = "Select one file at a time.";
+            zone.classList.add("file-error");
+            return;
+          }
+          importFile(files[0]);
+        });
+      } else if (field.type === "checkbox") {
         const check = element("label", "check-field");
         check.htmlFor = control.id;
         check.append(control, document.createTextNode(field.label));
@@ -105,6 +205,7 @@ export class ToolPanel extends HTMLElement {
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (pendingUploads > 0) return;
       status.classList.remove("error");
       try {
         output.textContent = definition.build(this.values(form));
