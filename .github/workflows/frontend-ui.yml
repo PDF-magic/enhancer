@@ -8,6 +8,7 @@ on:
       - "package.json"
       - "tests/*.test.js"
       - "Launch PDF Magic.command"
+      - "serve.py"
       - ".github/workflows/frontend-ui.yml"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "package.json"
       - "tests/*.test.js"
       - "Launch PDF Magic.command"
+      - "serve.py"
       - ".github/workflows/frontend-ui.yml"
 
 jobs:
@@ -27,3 +29,5 @@ jobs:
           node-version: "22"
       - name: Run frontend unit tests and validate the Mac launcher
         run: npm test
+      - name: Test local file upload server
+        run: python3 -m unittest discover -s tests -p 'test_local_server.py' -v

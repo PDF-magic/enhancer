@@ -7,8 +7,8 @@ url="http://127.0.0.1:4173/"
 
 is_toolbench_running() {
   local page
-  page="$(curl --silent --fail --max-time 2 "$url" 2>/dev/null)" || return 1
-  [[ "$page" == *"<title>PDF Magic Toolbench</title>"* ]]
+  page="$(curl --silent --fail --max-time 2 "${url}api/status" 2>/dev/null)" || return 1
+  [[ "$page" == *'"upload": true'* ]]
 }
 
 if is_toolbench_running; then
@@ -18,12 +18,13 @@ if is_toolbench_running; then
 fi
 
 if lsof -nP -iTCP:4173 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port 4173 is already in use by another service; not opening an unrelated website."
+  echo "Port 4173 is occupied by an older static server or another application."
+  echo "Stop it with Control-C, then start PDF Magic again to enable file imports."
   exit 1
 fi
 
 echo "Starting PDF Magic on $url"
-python3 -m http.server 4173 --bind 127.0.0.1 --directory web &
+python3 serve.py &
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 

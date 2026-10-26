@@ -8,7 +8,7 @@ export const ocr = {
   title: "Searchable OCR",
   summary: "Create a searchable, structured derivative while preserving the source scan.",
   fields: [
-    { name: "input", label: "Source PDF", required: true, placeholder: "scan.pdf", wide: true },
+    { name: "input", label: "Source PDF", type: "file", accept: ".pdf", required: true, wide: true },
     { name: "output", label: "Output PDF", placeholder: "scan-enhanced-ocr.pdf", wide: true, help: "Optional; the CLI derives a sibling filename when omitted." },
     { name: "title", label: "Title", placeholder: "Preserve original if blank" },
     { name: "author", label: "Author", placeholder: "Preserve or detect if blank" },
