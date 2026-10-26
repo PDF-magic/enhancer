@@ -1,0 +1,29 @@
+name: PDF Magic web UI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "package.json"
+      - "tests/*.test.js"
+      - "Launch PDF Magic.command"
+      - ".github/workflows/frontend-ui.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - "package.json"
+      - "tests/*.test.js"
+      - "Launch PDF Magic.command"
+      - ".github/workflows/frontend-ui.yml"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run frontend unit tests and validate the Mac launcher
+        run: npm test

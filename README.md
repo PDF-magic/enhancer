@@ -13,8 +13,20 @@ validates its own inputs and builds the corresponding local CLI command.
 npm run serve
 ```
 
-Open `http://localhost:4173` in a browser. Run the frontend command-builder
-tests with `npm test`.
+Open `http://localhost:4173` in a browser. On macOS, **double-click
+[`Launch PDF Magic.command`](Launch%20PDF%20Magic.command)** in Finder to start
+the local server and automatically open the site in your default browser.
+Alternatively, run `npm run open` from the repository root. If PDF Magic
+is already serving port 4173, the launcher opens the existing instance
+rather than starting another. The launcher binds its new server to localhost;
+leave its Terminal window open to keep the server running.
+
+The interface follows the system appearance by default. Use the **Dark mode /
+Light mode** button in the top-right corner to override it; the preference is
+saved in your browser. The interface still only **builds commands**. It does not
+run Google Books exports or PDF enhancement jobs itself.
+
+Run the frontend tests with `npm test`.
 
 ## Google Play Books export
 

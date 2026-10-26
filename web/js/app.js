@@ -1,4 +1,7 @@
 import "./components/tool-panel.js";
+import { initThemeToggle } from "./theme.js";
+
+initThemeToggle();
 import { tools } from "./tools/index.js";
 
 const grid = document.querySelector("#tool-grid");
