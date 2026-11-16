@@ -5,7 +5,7 @@ structured derivatives of scanned PDFs.
 
 ## Web toolbench
 
-The dependency-free [web interface](web/index.html) keeps Google Books export,
+The dependency-free [web interface](web/index.html) keeps Google Books and Internet Archive export,
 OCR, local AI review, and compression in separate reusable modules. Each panel
 validates its own inputs and builds the corresponding local CLI command.
 
@@ -24,7 +24,7 @@ leave its Terminal window open to keep the server running.
 The interface follows the system appearance by default. Use the **Dark mode /
 Light mode** button in the top-right corner to override it; the preference is
 saved in your browser. The interface still only **builds commands**. It does not
-run Google Books exports or PDF enhancement jobs itself.
+run book exports or PDF enhancement jobs itself.
 
 Run the frontend tests with `npm test`.
 
@@ -51,6 +51,39 @@ By default, captures are written to `BOOK_ID-pages/` and the combined document
 to `BOOK_ID.pdf`. The exporter resumes from existing captures, advances until
 the reader stops, and removes the final reader-completion capture before PDF
 assembly.
+
+## Internet Archive export
+
+`export-archive-book.py` captures individual scans from Internet Archive's
+BookReader, including books opened in two-page mode. It accepts an item ID or
+the full details URL and uses the same `img2pdf` and Playwright dependencies
+listed above.
+
+```sh
+python3 export-archive-book.py https://archive.org/details/transformationof00seli/mode/2up
+```
+
+Playwright opens a visible Chromium browser window. The exporter pauses and
+waits for you before capturing anything:
+
+1. In that browser window, sign in and borrow the book if required.
+2. Open the reader and wait until the book's pages are visible.
+3. Return to the Terminal window where you ran the command and press **Enter**
+   to start exporting. Keep the browser open while the export runs.
+
+Your login is saved for future runs. Only pages available to that reader
+session can be captured. The linked book has a restricted PDF download;
+this tool captures the reader rather than downloading that private file.
+Full-book export requires reader access to all scans.
+
+Captures default to `transformationof00seli-archive-pages/` and the PDF to
+`transformationof00seli.pdf`. Use `--output-dir` and `--output-pdf` to change
+these. `--start 1 --end 10` exports an inclusive range of scan positions
+(including covers and front matter, rather than printed page numbers).
+Existing captures at those positions are reused on rerun. Keep each capture
+directory dedicated to one book. All requested scans must succeed before the
+PDF is assembled; if access or loading fails, captures remain for resuming.
+Sign-in state is retained in the local `.internet-archive-browser` profile.
 
 ## OCR, compression, and structure tagging
 
