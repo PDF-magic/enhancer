@@ -66,13 +66,15 @@ def wait_until(page, predicate, timeout=30):
 
 def reader_count(page):
     wait_until(page, lambda: page.evaluate(
-        "() => Boolean(window.br?.book?.getNumLeafs())"))
+        """() => Boolean(window.br?.book?.getNumLeafs()
+            && [1, 2, 3].includes(window.br.mode)
+            && document.querySelector('.BRpageimage'))"""))
     return page.evaluate("() => window.br.book.getNumLeafs()")
 
 
 def capture_scan(page, index):
     """Capture only the requested scan, never a neighboring or loading page."""
-    page.evaluate("() => window.br.switchMode(1)")
+    page.evaluate("() => { if (window.br.mode !== 1) window.br.switchMode(1); }")
     page.evaluate("index => window.br.jumpToIndex(index)", index)
     image = page.locator(f'.BRpagecontainer[data-index="{index}"] .BRpageimage')
 

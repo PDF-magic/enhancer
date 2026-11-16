@@ -70,7 +70,7 @@ class CaptureTests(unittest.TestCase):
               }, 100);
             }
           };
-        </script>''')
+        </script><img class="BRpageimage">''')
 
     def tearDown(self):
         self.page.close()
