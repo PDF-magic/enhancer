@@ -2,3 +2,8 @@
 __pycache__/
 .google-books-browser/
 *-pages/
+
+# Python virtual environments
+.venv/
+venv/
+env/
