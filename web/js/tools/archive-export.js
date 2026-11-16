@@ -25,7 +25,7 @@ export const archiveExport = {
   accent: "blue",
   eyebrow: "Reader capture",
   title: "Internet Archive export",
-  summary: "Assemble accessible reader pages into a PDF. Sign in or borrow in the opened browser if required.",
+  summary: "Export reader pages to a PDF. In the browser that opens, sign in or borrow if required. Wait for the book pages to appear, then return to Terminal and press Enter to start. Your login is saved for future runs.",
   fields: [
     { name: "book", label: "Book URL or item ID", required: true, wide: true,
       placeholder: "https://archive.org/details/transformationof00seli/mode/2up" },

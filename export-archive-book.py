@@ -134,9 +134,13 @@ def main():
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(f"https://archive.org/details/{args.book}/mode/1up",
                       wait_until="domcontentloaded", timeout=60000)
-            print("Internet Archive is open. Sign in or borrow the book if required.")
+            print("Internet Archive is open in a visible browser window controlled by Playwright.")
+            print("1. In that browser, sign in and borrow the book if required.")
+            print("2. Open the reader and wait until the book's pages are visible.")
+            print("3. Return to this Terminal window and press Enter to start exporting.")
+            print("The exporter waits here until you press Enter. Your login is saved for future runs.")
             print("Only pages available in this reader session can be exported.")
-            input("Press Enter when the book's pages are visible... ")
+            input("Press Enter here in Terminal when you are ready to export... ")
             export_pages(page, output_dir, output_pdf, args.start, args.end)
         finally:
             context.close()

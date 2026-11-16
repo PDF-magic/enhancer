@@ -63,8 +63,15 @@ listed above.
 python3 export-archive-book.py https://archive.org/details/transformationof00seli/mode/2up
 ```
 
-In the browser that opens, sign in or borrow if required, wait for the pages to
-appear, then press Enter in Terminal. Only pages available to that reader
+Playwright opens a visible Chromium browser window. The exporter pauses and
+waits for you before capturing anything:
+
+1. In that browser window, sign in and borrow the book if required.
+2. Open the reader and wait until the book's pages are visible.
+3. Return to the Terminal window where you ran the command and press **Enter**
+   to start exporting. Keep the browser open while the export runs.
+
+Your login is saved for future runs. Only pages available to that reader
 session can be captured. The linked book has a restricted PDF download;
 this tool captures the reader rather than downloading that private file.
 Full-book export requires reader access to all scans.
