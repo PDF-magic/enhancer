@@ -79,8 +79,10 @@ def capture_scan(page, index):
     image = page.locator(f'.BRpagecontainer[data-index="{index}"] .BRpageimage')
 
     def ready():
-        return (page.evaluate("() => window.br.currentIndex()") == index
-                and image.count() == 1
+        # currentIndex() tracks the top of the scroll viewport. At the end of
+        # the book it can remain on an earlier scan even with this image loaded.
+        # The container's data-index identifies the requested scan directly.
+        return (image.count() == 1
                 and image.evaluate("img => img.complete && img.naturalWidth > 200 && img.naturalHeight > 200"))
 
     wait_until(page, ready)

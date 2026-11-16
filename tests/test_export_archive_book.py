@@ -99,6 +99,14 @@ class CaptureTests(unittest.TestCase):
                 exporter.export_pages(self.page, self.root / "pages", pdf)
         self.assertEqual(pdf.read_bytes(), b"existing document")
 
+    def test_final_scan_exports_when_viewport_counter_stays_on_previous_scan(self):
+        self.page.evaluate("() => { br.currentIndex = () => 1; }")
+        pdf = self.root / "book.pdf"
+        exporter.export_pages(self.page, self.root / "pages", pdf)
+        import pikepdf
+        with pikepdf.open(pdf) as document:
+            self.assertEqual(len(document.pages), 3)
+
     def test_range_beyond_reader_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3 scans"):
             exporter.export_pages(self.page, self.root / "pages", self.root / "book.pdf", end=4)
