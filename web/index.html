@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Build commands for PDF Magic's export, OCR, AI review, and compression tools.">
     <title>PDF Magic Toolbench</title>
+    <script>
+      // Resolve the theme before styles load to prevent a light-mode flash.
+      (() => {
+        let preference = null;
+        try { preference = localStorage.getItem("pdf-magic-theme"); } catch {}
+        const darkSystem = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme =
+          preference === "dark" || (preference !== "light" && darkSystem)
+            ? "dark" : "light";
+      })();
+    </script>
     <link rel="stylesheet" href="./styles.css">
     <script type="module" src="./js/app.js"></script>
   </head>
@@ -14,12 +25,18 @@
         <span class="brand-mark" aria-hidden="true">P</span>
         <span>PDF Magic</span>
       </a>
-      <nav aria-label="Tool navigation">
-        <a href="#google-export">Export</a>
-        <a href="#ocr">OCR</a>
-        <a href="#ai-review">AI review</a>
-        <a href="#compression">Compression</a>
-      </nav>
+      <div class="header-actions">
+        <nav aria-label="Tool navigation">
+          <a href="#google-export">Export</a>
+          <a href="#ocr">OCR</a>
+          <a href="#ai-review">AI review</a>
+          <a href="#compression">Compression</a>
+        </nav>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">
+          <span class="theme-icon" aria-hidden="true">☾</span>
+          <span class="theme-label">Dark mode</span>
+        </button>
+      </div>
     </header>
 
     <main id="top">

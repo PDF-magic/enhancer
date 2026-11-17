@@ -14,8 +14,39 @@
   --plum: #70506f;
   --plum-soft: #eadfea;
   --shadow: 0 24px 70px rgb(23 34 30 / 8%);
+  --field-bg: #fff;
+  --header-bg: rgb(246 244 238 / 88%);
+  --header-line: rgb(217 222 216 / 85%);
+  --glow: rgb(220 236 229 / 70%);
+  --primary-text: white;
+  --error: #a43c2f;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
+}
+
+/* All panels, controls, and accent colors share the same theme tokens. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #ecf4ef;
+  --muted: #aebfb6;
+  --paper: #121a17;
+  --surface: #1b2721;
+  --line: #3d5045;
+  --green: #96dbb5;
+  --green-soft: #284637;
+  --blue: #a2d1f2;
+  --blue-soft: #294457;
+  --amber: #f0cc8e;
+  --amber-soft: #4b3c26;
+  --plum: #d9b5da;
+  --plum-soft: #49384c;
+  --shadow: 0 24px 70px rgb(0 0 0 / 24%);
+  --field-bg: #152019;
+  --header-bg: rgb(18 26 23 / 90%);
+  --header-line: rgb(61 80 69 / 85%);
+  --glow: rgb(45 105 78 / 22%);
+  --primary-text: #112018;
+  --error: #ffafa2;
 }
 
 * { box-sizing: border-box; }
@@ -26,7 +57,7 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    radial-gradient(circle at 12% 8%, rgb(220 236 229 / 70%), transparent 26rem),
+    radial-gradient(circle at 12% 8%, var(--glow), transparent 26rem),
     var(--paper);
 }
 
@@ -44,8 +75,8 @@ a { color: inherit; }
   gap: 2rem;
   min-height: 4.5rem;
   padding: 0 5vw;
-  border-bottom: 1px solid rgb(217 222 216 / 85%);
-  background: rgb(246 244 238 / 88%);
+  border-bottom: 1px solid var(--header-line);
+  background: var(--header-bg);
   backdrop-filter: blur(16px);
 }
 
@@ -64,12 +95,34 @@ a { color: inherit; }
   height: 2rem;
   place-items: center;
   border-radius: .55rem;
-  color: white;
+  color: var(--paper);
   background: var(--ink);
   font-family: Georgia, serif;
 }
 
+.header-actions { display: flex; align-items: center; gap: 1.75rem; }
+
 nav { display: flex; gap: 1.4rem; }
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .55rem;
+  flex: none;
+  min-height: 2.5rem;
+  padding: .5rem .85rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.theme-toggle:hover { border-color: var(--green); }
+.theme-toggle:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }
+.theme-icon { font-size: 1.15rem; line-height: 1; }
 
 nav a {
   color: var(--muted);
@@ -185,7 +238,7 @@ input:not([type="checkbox"]), select {
   border: 1px solid var(--line);
   border-radius: .7rem;
   color: var(--ink);
-  background: white;
+  background: var(--field-bg);
   outline: none;
 }
 
@@ -214,7 +267,7 @@ button {
   font-weight: 760;
 }
 
-.primary { color: white; background: var(--accent); }
+.primary { color: var(--primary-text); background: var(--accent); }
 .secondary { color: var(--ink); border-color: var(--line); background: transparent; }
 button:disabled { cursor: not-allowed; opacity: .45; }
 
@@ -235,11 +288,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 }
 
 .status { min-height: 1.2rem; margin: .65rem 0 0; color: var(--muted); font-size: .76rem; }
-.status.error { color: #a43c2f; }
+.status.error { color: var(--error); }
 
 footer { padding: 2rem 5vw 3rem; border-top: 1px solid var(--line); color: var(--muted); text-align: center; font-size: .82rem; }
 
-.noscript { padding: 1rem; border: 1px solid #a43c2f; }
+.noscript { padding: 1rem; border: 1px solid var(--error); }
 
 @media (max-width: 820px) {
   nav { display: none; }
@@ -251,6 +304,8 @@ footer { padding: 2rem 5vw 3rem; border-top: 1px solid var(--line); color: var(-
   main { width: min(92vw, 1180px); }
   .workflow { align-items: flex-start; flex-direction: column; }
   .workflow i { width: 1px; height: .8rem; margin-left: 1.5rem; flex: none; }
+  .theme-label { display: none; }
+  .theme-toggle { padding-inline: .75rem; }
   .fields { grid-template-columns: 1fr; }
   .field { grid-column: 1; }
   .card-head, form { padding-right: 1.25rem; padding-left: 1.25rem; }
