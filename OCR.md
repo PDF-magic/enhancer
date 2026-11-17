@@ -3,6 +3,25 @@
 These tools create reproducible searchable, structured, and losslessly
 compressed derivatives of scanned PDFs without replacing the source.
 
+## Python environment
+
+Install the Enhancer's isolated Python dependencies once:
+
+```sh
+./setup-python-env.sh
+```
+
+This creates `.venv/` beside the Enhancer scripts with `pikepdf` and Pillow.
+The OCR and compression scripts prefer `.venv/bin/python` for tagging, local AI
+review, and metadata helpers. Existing standalone installations without this
+environment can still use Python with the required packages, including the
+interpreter bundled with OCRmyPDF. An incomplete project venv produces an error
+instead of silently using an unrelated global interpreter.
+
+The browser viewer's native-host installer also initializes this environment
+when an Enhancer checkout supplies `setup-python-env.sh`. OCRmyPDF and qpdf
+remain separate system executables, typically installed using Homebrew.
+
 ## Create searchable OCR
 
 Run the OCR, paragraph grouping, table-block classification, and heading

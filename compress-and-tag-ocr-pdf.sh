@@ -53,23 +53,36 @@ for command_name in ocrmypdf qpdf; do
     fi
 done
 
-tagger_python=python3
-if ! "$tagger_python" -c 'import pikepdf, PIL' >/dev/null 2>&1; then
-    ocrmypdf_shebang=$(head -n 1 "$(command -v ocrmypdf)")
-    tagger_python=${ocrmypdf_shebang#\#!}
-fi
-
-if [[ ! -x "$tagger_python" ]] || \
-    ! "$tagger_python" -c 'import pikepdf, PIL' >/dev/null 2>&1; then
-    printf 'Unable to find the Python environment used by OCRmyPDF.\n' >&2
-    exit 1
+venv_python="$script_dir/.venv/bin/python"
+if [[ -e "$venv_python" || -L "$venv_python" ]]; then
+    if [[ ! -x "$venv_python" ]] || ! "$venv_python" -c 'import pikepdf, PIL' >/dev/null 2>&1; then
+        printf 'PDF Enhancer virtual environment needs repair: %s\n' "$venv_python" >&2
+        printf 'Run %s/setup-python-env.sh to install its dependencies.\n' "$script_dir" >&2
+        exit 1
+    fi
+    tagger_python=("$venv_python")
+else
+    tagger_python=(python3)
+    if ! "${tagger_python[@]}" -c 'import pikepdf, PIL' >/dev/null 2>&1; then
+        ocrmypdf_shebang=$(head -n 1 "$(command -v ocrmypdf)")
+        if [[ "$ocrmypdf_shebang" == '#!'* ]]; then
+            read -r -a tagger_python <<< "${ocrmypdf_shebang:2}"
+        else
+            tagger_python=()
+        fi
+    fi
+    if (( ${#tagger_python[@]} == 0 )) || \
+        ! "${tagger_python[@]}" -c 'import pikepdf, PIL' >/dev/null 2>&1; then
+        printf 'No Python with pikepdf/Pillow found; run %s/setup-python-env.sh.\n' "$script_dir" >&2
+        exit 1
+    fi
 fi
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/compress-tag-pdf.XXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT
 compressed="$work_dir/compressed.pdf"
 
-"$tagger_python" "$script_dir/compress-pdf-images.py" \
+"${tagger_python[@]}" "$script_dir/compress-pdf-images.py" \
     "$input" "$compressed" \
     --report "$compression_report" \
     --reported-output "$output"
@@ -88,7 +101,7 @@ if [[ -n "$review" ]]; then
     fi
     tagger_args+=(--review "$review")
 fi
-"$tagger_python" "$script_dir/tag-ocr-pdf.py" "${tagger_args[@]}"
+"${tagger_python[@]}" "$script_dir/tag-ocr-pdf.py" "${tagger_args[@]}"
 
 qpdf --check "$output"
 input_pages=$(qpdf --show-npages "$input")
