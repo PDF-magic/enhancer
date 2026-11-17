@@ -1,5 +1,12 @@
 .DS_Store
-__pycache__/
+
 .google-books-browser/
+.internet-archive-browser/
 *-pages/
 .pdfmagic-uploads/
+
+# Python virtual environments
+__pycache__/
+.venv/
+venv/
+env/
