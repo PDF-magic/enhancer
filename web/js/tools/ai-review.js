@@ -8,8 +8,8 @@ export const aiReview = {
   title: "AI OCR review",
   summary: "Review OCR blocks against page images with local Ollama models.",
   fields: [
-    { name: "pdf", label: "OCR PDF", required: true, placeholder: "scan-ocr.pdf" },
-    { name: "report", label: "Tagging report", required: true, placeholder: "scan-ocr.tagging.json" },
+    { name: "pdf", label: "OCR PDF", type: "file", accept: ".pdf", required: true },
+    { name: "report", label: "Tagging report", type: "file", accept: ".json", required: true },
     { name: "output", label: "Review output", required: true, placeholder: "review-v1.jsonl", wide: true },
     { name: "pages", label: "Pages", placeholder: "1-10,14,20", help: "Leave blank to review every page." },
     { name: "dpi", label: "Render DPI", type: "number", min: 1, placeholder: "180" },
